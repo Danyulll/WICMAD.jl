@@ -6,6 +6,10 @@ using Distributions
 using StatsBase
 using StatsFuns
 using ProgressMeter
+using Random
+using Distributed
+using Base.Threads
+using Dates
 
 # Include all module components
 include("utils.jl")
@@ -28,7 +32,7 @@ using .KernelSelection
 # Main exports
 export wicmad, adj_rand_index, choose2, init_diagnostics,
        plot_cluster_means_diagnostic, plot_kernel_switches_diagnostic, plot_wicmad_diagnostics,
-       interactive_kernel_selection
+       interactive_kernel_selection, wicmad_bootstrap_driver
 
 # Utility functions
 choose2(n::Int) = n < 2 ? 0.0 : n * (n - 1) / 2
@@ -123,7 +127,38 @@ function wicmad(
     track_ids = nothing,
     monitor_levels = nothing,
     wf_candidates = nothing,
+    # Bootstrap parameters (defaults ON)
+    bootstrap_runs::Int = 1000,
+    bootstrap_method::Symbol = :bag,
+    bootstrap_fraction::Float64 = 1.0,
+    bootstrap_parallel::Symbol = :threads,
+    bootstrap_nworkers::Int = max(1, Sys.CPU_THREADS - 1),
+    bootstrap_chunk::Int = 8,
+    bootstrap_seed::Int = 2025,
+    parallel::Bool = false,
+    rng::AbstractRNG = Random.default_rng(),
 )
+    # Bootstrap dispatch: if bootstrap_runs > 0, use bootstrap driver
+    if bootstrap_runs > 0
+        return wicmad_bootstrap_driver(Y, t;
+            bootstrap_runs=bootstrap_runs,
+            bootstrap_method=bootstrap_method,
+            bootstrap_fraction=bootstrap_fraction,
+            bootstrap_parallel=bootstrap_parallel,
+            bootstrap_nworkers=bootstrap_nworkers,
+            bootstrap_chunk=bootstrap_chunk,
+            bootstrap_seed=bootstrap_seed,
+            n_iter=n_iter, burn=burn, thin=thin, alpha_prior=alpha_prior,
+            wf=wf, J=J, boundary=boundary, mh_step_L=mh_step_L,
+            mh_step_eta=mh_step_eta, mh_step_tauB=mh_step_tauB,
+            revealed_idx=revealed_idx, K_init=K_init, warmup_iters=warmup_iters,
+            unpin=unpin, kappa_pi=kappa_pi, c2=c2, tau_pi=tau_pi,
+            a_sig=a_sig, b_sig=b_sig, a_tau=a_tau, b_tau=b_tau,
+            a_eta=a_eta, b_eta=b_eta, diagnostics=diagnostics,
+            track_ids=track_ids, monitor_levels=monitor_levels,
+            wf_candidates=wf_candidates, rng=rng)
+    end
+
     n_iter < 2 && error("n_iter must be >= 2")
     thin = max(thin, 1)
     if burn >= n_iter
@@ -166,8 +201,8 @@ function wicmad(
     end
 
     kernels = make_kernels(add_bias_variants = false)
-    alpha = Base.rand(Gamma(alpha_prior[1], 1 / alpha_prior[2]))
-    v = [Base.rand(Beta(1, alpha)) for _ in 1:K_init]
+    alpha = rand(rng, Gamma(alpha_prior[1], 1 / alpha_prior[2]))
+    v = [rand(rng, Beta(1, alpha)) for _ in 1:K_init]
     params = ClusterParams[]
     for _ in 1:length(v)
         cp = draw_new_cluster_params(M, P, t_scaled, kernels; wf = wf, J = Jv, boundary = boundary)
@@ -177,7 +212,7 @@ function wicmad(
         push!(params, cp)
     end
 
-    z = [Base.rand(1:length(v)) for _ in 1:N]
+    z = [rand(rng, 1:length(v)) for _ in 1:N]
     if !isempty(revealed_idx)
         for idx in revealed_idx
             if 1 <= idx <= N
@@ -218,16 +253,21 @@ function wicmad(
 
     sidx = 0
     
-    # Progress bar setup
-    progress_bar = Progress(n_iter, desc="WICMAD MCMC", 
-                           showspeed=true, 
-                           color=:blue)
-    
-    println("Starting WICMAD MCMC with $n_iter iterations...")
+    # Progress reporting setup
+    if parallel
+        println("Starting WICMAD MCMC with $n_iter iterations (parallel mode)...")
+        print_interval = max(1, n_iter ÷ 20)  # Print every 5% of iterations
+    else
+        # Progress bar setup
+        progress_bar = Progress(n_iter, desc="WICMAD MCMC", 
+                               showspeed=true, 
+                               color=:blue)
+        println("Starting WICMAD MCMC with $n_iter iterations...")
+    end
 
     for iter in 1:n_iter
         pi = Utils.stick_to_pi(v)
-        u = [Base.rand(Uniform(0, pi[z[i]])) for i in 1:N]
+        u = [rand(rng, Uniform(0, pi[z[i]])) for i in 1:N]
         u_star = minimum(u)
         v = Utils.extend_sticks_until(v, alpha, u_star)
         pi = Utils.stick_to_pi(v)
@@ -296,16 +336,23 @@ function wicmad(
             diag[:global][:K_occ_all][iter] = Kocc
         end
 
-        eta_aux = Base.rand(Beta(alpha + 1, N))
+        eta_aux = rand(rng, Beta(alpha + 1, N))
         mix = (alpha_prior[1] + Kocc - 1) / (N * (alpha_prior[2] - log(eta_aux)) + alpha_prior[1] + Kocc - 1)
-        if Base.rand() < mix
-            alpha = Base.rand(Gamma(alpha_prior[1] + Kocc, 1 / (alpha_prior[2] - log(eta_aux))))
+        if rand(rng) < mix
+            alpha = rand(rng, Gamma(alpha_prior[1] + Kocc, 1 / (alpha_prior[2] - log(eta_aux))))
         else
-            alpha = Base.rand(Gamma(alpha_prior[1] + Kocc - 1, 1 / (alpha_prior[2] - log(eta_aux))))
+            alpha = rand(rng, Gamma(alpha_prior[1] + Kocc - 1, 1 / (alpha_prior[2] - log(eta_aux))))
         end
 
-        # Update progress bar
-        next!(progress_bar, showvalues=[(:iterations, iter), (:clusters, Kocc)])
+        # Update progress reporting
+        if parallel
+            if iter % print_interval == 0 || iter == n_iter
+                percentage = round(100 * iter / n_iter, digits=1)
+                println("Thread $(Threads.threadid()): $iter/$n_iter ($percentage%) - Clusters: $Kocc")
+            end
+        else
+            next!(progress_bar, showvalues=[(:iterations, iter), (:clusters, Kocc)])
+        end
 
         if keep > 0 && iter > burn && ((iter - burn) % thin == 0)
             sidx += 1
@@ -337,10 +384,340 @@ function wicmad(
     
     # Calculate final number of clusters
     final_Kocc = length(unique(z))
-    println("\nMCMC completed! Final clusters: $final_Kocc, Samples collected: $sidx")
+    if parallel
+        println("Thread $(Threads.threadid()): MCMC completed! Final clusters: $final_Kocc, Samples collected: $sidx")
+    else
+        println("\nMCMC completed! Final clusters: $final_Kocc, Samples collected: $sidx")
+    end
 
     (; Z = Z_s, alpha = alpha_s, kern = kern_s, params = params, v = v, pi = Utils.stick_to_pi(v),
         revealed_idx = revealed_idx, K_occ = K_s, loglik = loglik_s, diagnostics = diag)
+end
+
+# =============================================================================
+# BOOTSTRAP FUNCTIONALITY
+# =============================================================================
+
+"""
+    relabel_to_consecutive(z::Vector{Int}) -> Vector{Int}
+
+Relabel cluster assignments to consecutive integers starting from 1.
+"""
+function relabel_to_consecutive(z::Vector{Int})
+    unique_labels = unique(z)
+    label_map = Dict(old_label => new_label for (new_label, old_label) in enumerate(unique_labels))
+    return [label_map[label] for label in z]
+end
+
+"""
+    coassign_from_labels(z::AbstractVector{Int}) -> Matrix{Float64}
+
+Create coassignment matrix from cluster labels.
+"""
+function coassign_from_labels(z::AbstractVector{Int})
+    N = length(z)
+    S = zeros(Float64, N, N)
+    for i in 1:N
+        for j in i:N
+            S[i, j] = (z[i] == z[j]) ? 1.0 : 0.0
+            if j != i
+                S[j, i] = S[i, j]
+            end
+        end
+    end
+    return S
+end
+
+"""
+    assign_argmax_cluster(y::Matrix{Float64}, t::Union{Vector{Float64}, Vector{Int64}}, params_map::Vector{ClusterParams}; rng::AbstractRNG) -> Int
+
+Assign observation to cluster with maximum likelihood using frozen MAP parameters.
+"""
+function assign_argmax_cluster(y::Matrix{Float64}, t::Union{Vector{Float64}, Vector{Int64}}, params_map::Vector{ClusterParams}; rng::AbstractRNG)
+    K = length(params_map)
+    logliks = Vector{Float64}(undef, K)
+    
+    for k in 1:K
+        cp = params_map[k]
+        # Use cached mu if available, otherwise compute
+        if cp.mu_cached !== nothing
+            mu_k = cp.mu_cached
+        else
+            # This would need the wavelet parameters - simplified for now
+            mu_k = zeros(size(y))
+        end
+        
+        # Compute log-likelihood using ICM cache
+        cache = cp.cache
+        logliks[k] = fast_icm_loglik_curve(y - mu_k, cache)
+    end
+    
+    return argmax(logliks)
+end
+
+"""
+    _wicmad_bootstrap_one_run(Y::Vector{Matrix{Float64}}, t::Vector{Float64}; kwargs...) -> NamedTuple
+
+Run a single bootstrap iteration: fit on in-bag data, assign OOB data using MAP parameters.
+Returns both the full assignment and the MAP partition from the in-bag fit.
+"""
+function _wicmad_bootstrap_one_run(
+    Y::Vector{Matrix{Float64}}, 
+    t::Union{Vector{Float64}, Vector{Int64}};
+    n_inbag::Int, 
+    method::Symbol = :bag, 
+    rng::AbstractRNG = Random.default_rng(),
+    parallel::Bool = false,
+    kwargs...
+)
+    N = length(Y)
+    
+    # Draw in-bag indices
+    if method == :bag
+        I_b = rand(rng, 1:N, n_inbag)
+    else  # :subsample
+        I_b = randperm(rng, N)[1:n_inbag]
+    end
+    I_bu = unique(I_b)
+    OOB = setdiff(1:N, I_bu)
+    
+    # Fit DP model on in-bag only
+    fit = wicmad(Y[I_bu], t; rng=rng, bootstrap_runs=0, parallel=parallel, kwargs...)
+    
+    # Get MAP partition and parameters
+    # For now, use the last MCMC sample as MAP approximation
+    zinbag_map = vec(fit.Z[end, :])
+    params_map = fit.params
+    
+    # Initialize full assignment vector
+    zfull = Vector{Int}(undef, N)
+    zfull[I_bu] = zinbag_map
+    
+    # Assign OOB observations using argmax likelihood
+    for o in OOB
+        zfull[o] = assign_argmax_cluster(Y[o], t, params_map; rng=rng)
+    end
+    
+    # Create MAP partition for full dataset (only in-bag observations have MAP assignments)
+    zmap_full = Vector{Int}(undef, N)
+    zmap_full[I_bu] = zinbag_map
+    # For OOB observations, we don't have MAP assignments, so we'll use the argmax assignments
+    zmap_full[OOB] = zfull[OOB]
+    
+    return (
+        z_full = relabel_to_consecutive(zfull),
+        z_map = relabel_to_consecutive(zmap_full),
+        params_map = params_map,
+        inbag_indices = I_bu,
+        oob_indices = OOB
+    )
+end
+
+"""
+    _bootstrap_aggregate_to_consensus(Zhat_full::Matrix{Int}, Zhat_map::Matrix{Int})
+
+Aggregate bootstrap results using Dahl least-squares consensus method.
+Returns both consensus clustering and MAP clustering.
+"""
+function _bootstrap_aggregate_to_consensus(Zhat_full::Matrix{Int}, Zhat_map::Matrix{Int})
+    N, B = size(Zhat_full)
+    
+    # Build coassignment matrix for full assignments
+    A_full = zeros(Float64, N, N)
+    for b in 1:B
+        zb = view(Zhat_full, :, b)
+        for i in 1:N
+            @inbounds for j in i:N
+                v = (zb[i] == zb[j]) ? 1.0 : 0.0
+                A_full[i, j] += v
+                if j != i
+                    A_full[j, i] += v
+                end
+            end
+        end
+    end
+    A_full ./= B
+    
+    # Build coassignment matrix for MAP assignments
+    A_map = zeros(Float64, N, N)
+    for b in 1:B
+        zb = view(Zhat_map, :, b)
+        for i in 1:N
+            @inbounds for j in i:N
+                v = (zb[i] == zb[j]) ? 1.0 : 0.0
+                A_map[i, j] += v
+                if j != i
+                    A_map[j, i] += v
+                end
+            end
+        end
+    end
+    A_map ./= B
+    
+    # Dahl least-squares: choose run minimizing ||S_b - A||_F^2 for full assignments
+    best_b_full, best_loss_full = 1, Inf
+    for b in 1:B
+        zb = view(Zhat_full, :, b)
+        S = coassign_from_labels(zb)
+        loss = sum(@. (S - A_full)^2)
+        if loss < best_loss_full
+            best_loss_full = loss
+            best_b_full = b
+        end
+    end
+    
+    # Dahl least-squares: choose run minimizing ||S_b - A||_F^2 for MAP assignments
+    best_b_map, best_loss_map = 1, Inf
+    for b in 1:B
+        zb = view(Zhat_map, :, b)
+        S = coassign_from_labels(zb)
+        loss = sum(@. (S - A_map)^2)
+        if loss < best_loss_map
+            best_loss_map = loss
+            best_b_map = b
+        end
+    end
+    
+    z_consensus_full = copy(view(Zhat_full, :, best_b_full))
+    z_consensus_map = copy(view(Zhat_map, :, best_b_map))
+    
+    return (
+        z_consensus = z_consensus_full,
+        z_map_consensus = z_consensus_map,
+        A_full = A_full,
+        A_map = A_map,
+        Zhat_full = Zhat_full,
+        Zhat_map = Zhat_map,
+        meta = (B=B, best_b_full=best_b_full, best_b_map=best_b_map)
+    )
+end
+
+"""
+    wicmad_bootstrap_driver(Y::Vector{Matrix{Float64}}, t::Vector{Float64}; kwargs...)
+
+Main bootstrap driver that orchestrates parallel bootstrap runs and returns consensus clustering.
+Runs wavelet selection first, then uses the selected wavelet for all bootstrap runs.
+"""
+function wicmad_bootstrap_driver(
+    Y::Vector{Matrix{Float64}}, 
+    t::Union{Vector{Float64}, Vector{Int64}};
+    bootstrap_runs::Int = 1000,
+    bootstrap_method::Symbol = :bag,
+    bootstrap_fraction::Float64 = 1.0,
+    bootstrap_parallel::Symbol = :threads,
+    bootstrap_nworkers::Int = max(1, Sys.CPU_THREADS - 1),
+    bootstrap_chunk::Int = 8,
+    bootstrap_seed::Int = 2025,
+    kwargs...
+)
+    N = length(Y)
+    B = bootstrap_runs
+    n_inbag = max(1, ceil(Int, bootstrap_fraction * N))
+    
+    # Extract wavelet selection parameters from kwargs
+    wf = get(kwargs, :wf, "sym8")
+    J = get(kwargs, :J, nothing)
+    boundary = get(kwargs, :boundary, "periodic")
+    revealed_idx = get(kwargs, :revealed_idx, Int[])
+    wf_candidates = get(kwargs, :wf_candidates, nothing)
+    
+    # Run wavelet selection first if revealed_idx is provided and using default wavelet
+    selected_wf = wf
+    if !isempty(revealed_idx) && wf == "sym8"  # Only run if using default wavelet
+        println("\n" * "="^60)
+        println("BOOTSTRAP WAVELET SELECTION")
+        println("="^60)
+        
+        # Convert Y to matrix format for wavelet selection
+        Y_mats = Vector{Matrix{Float64}}(undef, N)
+        for i in 1:N
+            if isa(Y[i], AbstractVector)
+                Y_mats[i] = reshape(Float64.(Y[i]), :, 1)
+            else
+                Y_mats[i] = Matrix{Float64}(Y[i])
+            end
+        end
+        
+        # Run wavelet selection
+        sel = KernelSelection.select_wavelet(Y_mats, t, revealed_idx; 
+                                             wf_candidates=wf_candidates, 
+                                             J=J, 
+                                             boundary=boundary,
+                                             mcmc=(n_iter=3000, burnin=1000, thin=1))
+        selected_wf = sel.selected_wf
+        println("Selected wavelet '$selected_wf' will be used for all bootstrap runs.")
+        println("="^60 * "\n")
+    end
+    
+    # Update kwargs with selected wavelet
+    kwargs_updated = merge(NamedTuple(kwargs), (wf=selected_wf,))
+    
+    # Storage: labels for all N obs × B runs (both full and MAP)
+    Zhat_full = Matrix{Int}(undef, N, B)
+    Zhat_map = Matrix{Int}(undef, N, B)
+    
+    println("Starting bootstrap with $B runs using $bootstrap_parallel parallelization...")
+    println("Using wavelet: $selected_wf")
+    
+    # Diagnostic information
+    if bootstrap_parallel == :threads
+        println("Threading info: $(Threads.nthreads()) threads available")
+    elseif bootstrap_parallel == :processes
+        println("Process info: $(nprocs()) processes available")
+    end
+    
+    if bootstrap_parallel == :none
+        for b in 1:B
+            rng = MersenneTwister(bootstrap_seed + b)
+            result = _wicmad_bootstrap_one_run(Y, t; n_inbag=n_inbag, method=bootstrap_method, rng=rng, kwargs_updated...)
+            Zhat_full[:, b] = result.z_full
+            Zhat_map[:, b] = result.z_map
+        end
+        
+    elseif bootstrap_parallel == :threads
+        Threads.@threads for b in 1:B
+            println("Thread $(Threads.threadid()) starting bootstrap run $b")
+            rng = MersenneTwister(bootstrap_seed + b)
+            result = _wicmad_bootstrap_one_run(Y, t; n_inbag=n_inbag, method=bootstrap_method, rng=rng, parallel=true, kwargs_updated...)
+            Zhat_full[:, b] = result.z_full
+            Zhat_map[:, b] = result.z_map
+            println("Thread $(Threads.threadid()) completed bootstrap run $b")
+        end
+        
+    elseif bootstrap_parallel == :processes
+        if nprocs() == 1
+            addprocs(bootstrap_nworkers)
+        end
+        
+        # Make code visible on workers
+        Distributed.@everywhere begin
+            # Random and WICMAD are already available
+        end
+        
+        # Ship immutable views/args
+        jobs = collect(1:B)
+        kwargs_nt = (; kwargs_updated...)
+        
+        Distributed.@everywhere function _bootstrap_job(b::Int, Y, t, n_inbag, method, seed, kwargs_nt)
+            rng = MersenneTwister(seed + b)
+            return WICMAD._wicmad_bootstrap_one_run(Y, t; n_inbag=n_inbag, method=method, rng=rng, (;kwargs_nt)...)
+        end
+        
+        results = pmap(b -> _bootstrap_job(b, Y, t, n_inbag, bootstrap_method, bootstrap_seed, kwargs_nt),
+                       jobs; batch_size=bootstrap_chunk)
+        
+        for (k, b) in enumerate(jobs)
+            Zhat_full[:, b] = results[k].z_full
+            Zhat_map[:, b] = results[k].z_map
+        end
+        
+    else
+        error("bootstrap_parallel must be :none | :threads | :processes")
+    end
+    
+    println("Bootstrap runs completed. Computing consensus clustering...")
+    
+    return _bootstrap_aggregate_to_consensus(Zhat_full, Zhat_map)
 end
 
 end # module

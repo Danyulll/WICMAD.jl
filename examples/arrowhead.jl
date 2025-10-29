@@ -288,9 +288,21 @@ n_normal_target = total_samples - n_anomaly_target
 println("Target: $(n_anomaly_target) anomalies (15% of $total_samples total samples)")
 println("Target: $(n_normal_target) normal samples (85% of $total_samples total samples)")
 
-# Use all normal samples and enough anomalies to reach 15% of total
-n_normal_used = min(length(normal_indices), n_normal_target)
-n_anomaly_used = min(length(anomaly_indices), n_anomaly_target)
+# Ensure we have exactly 15% anomalies by adjusting the total dataset size if needed
+if length(anomaly_indices) < n_anomaly_target
+    println("Warning: Only $(length(anomaly_indices)) anomaly samples available, but need $(n_anomaly_target)")
+    println("Adjusting target to use all available anomaly samples")
+    n_anomaly_used = length(anomaly_indices)
+    n_normal_used = min(length(normal_indices), round(Int, n_anomaly_used / 0.15 * 0.85))
+elseif length(normal_indices) < n_normal_target
+    println("Warning: Only $(length(normal_indices)) normal samples available, but need $(n_normal_target)")
+    println("Adjusting target to use all available normal samples")
+    n_normal_used = length(normal_indices)
+    n_anomaly_used = min(length(anomaly_indices), round(Int, n_normal_used / 0.85 * 0.15))
+else
+    n_anomaly_used = n_anomaly_target
+    n_normal_used = n_normal_target
+end
 
 println("Using $(n_normal_used) normal samples (available: $(length(normal_indices)))")
 println("Using $(n_anomaly_used) anomaly samples (available: $(length(anomaly_indices)))")
@@ -314,12 +326,25 @@ for (i, idx) in enumerate(all_used_indices)
 end
 
 println("Total samples used: $(length(all_used_indices))")
-println("Actual anomaly percentage: $(round(100 * n_anomaly_used / length(all_used_indices), digits=1))%")
+actual_anomaly_percentage = round(100 * n_anomaly_used / length(all_used_indices), digits=1)
+println("Actual anomaly percentage: $(actual_anomaly_percentage)%")
 println("Revealed labels distribution: $(countmap(revealed_labels))")
 
+# Verify we achieved the target percentage
+if abs(actual_anomaly_percentage - 15.0) < 0.1
+    println("✓ Successfully achieved ~15% anomaly rate")
+else
+    println("⚠ Warning: Anomaly rate is $(actual_anomaly_percentage)%, not exactly 15%")
+end
+
 # For WICMAD, we need to specify which indices are revealed (normal samples)
-# We'll reveal all normal samples since they're the "known normal" group
-revealed_normal_indices = findall(idx -> idx in used_normal_indices, all_used_indices)
+# We'll reveal 25% of the normal samples to make the task more challenging
+n_revealed_normal = max(1, round(Int, 0.25 * n_normal_used))  # At least 1, but 25% of normal samples
+revealed_normal_subset = sample(used_normal_indices, n_revealed_normal, replace=false)
+revealed_normal_indices = findall(idx -> idx in revealed_normal_subset, all_used_indices)
+
+println("Revealing $(n_revealed_normal) out of $(n_normal_used) normal samples ($(round(100 * n_revealed_normal / n_normal_used, digits=1))%)")
+println("Revealed normal indices: $(length(revealed_normal_indices))")
 
 println("\n" * "="^50)
 println("VERIFYING DATA WITH EARLY PLOTS")
@@ -472,123 +497,123 @@ X_subset_vec = [X_subset[i, :] for i in 1:size(X_subset, 1)]
 # Create time vector
 t = collect(1:size(X_subset, 2))
 
-println("\n" * "="^50)
-println("ANALYSIS 1: RAW DATA ONLY")
-println("="^50)
+# println("\n" * "="^50)
+# println("ANALYSIS 1: RAW DATA ONLY")
+# println("="^50)
 
-# Run WICMAD with Conservative-Balanced configuration on raw data only
-println("Running WICMAD with Conservative-Balanced configuration on raw data...")
-println("Data shape: $(size(X_subset))")
-println("Revealed indices: $(length(revealed_normal_indices))")
+# # Run WICMAD with Conservative-Balanced configuration on raw data only
+# println("Running WICMAD with Conservative-Balanced configuration on raw data...")
+# println("Data shape: $(size(X_subset))")
+# println("Revealed indices: $(length(revealed_normal_indices))")
 
-results_raw = wicmad(X_subset_vec, t;
-    n_iter=5000,
-    burn=2000,
-    thin=1,
-    alpha_prior=conservative_balanced_config[:alpha_prior],
-    a_eta=conservative_balanced_config[:a_eta],
-    b_eta=conservative_balanced_config[:b_eta],
-    a_sig=conservative_balanced_config[:a_sig],
-    b_sig=conservative_balanced_config[:b_sig],
-    revealed_idx=revealed_normal_indices,
-    warmup_iters=500,
-    diagnostics=true,
-    wf="sym8"
-)
+# results_raw = wicmad(X_subset_vec, t;
+#     n_iter=5000,
+#     burn=2000,
+#     thin=1,
+#     alpha_prior=conservative_balanced_config[:alpha_prior],
+#     a_eta=conservative_balanced_config[:a_eta],
+#     b_eta=conservative_balanced_config[:b_eta],
+#     a_sig=conservative_balanced_config[:a_sig],
+#     b_sig=conservative_balanced_config[:b_sig],
+#     revealed_idx=revealed_normal_indices,
+#     warmup_iters=500,
+#     diagnostics=true,
+#     wf="sym8"
+# )
 
-println("WICMAD Raw Data Analysis completed!")
+# println("WICMAD Raw Data Analysis completed!")
 
-# Extract clustering results for Raw Data Analysis
-cluster_assignments_raw = vec(results_raw.Z[end, :])  # Get final MCMC sample as vector
-n_clusters_raw = length(unique(cluster_assignments_raw))
-cluster_distribution_raw = countmap(cluster_assignments_raw)
+# # Extract clustering results for Raw Data Analysis
+# cluster_assignments_raw = vec(results_raw.Z[end, :])  # Get final MCMC sample as vector
+# n_clusters_raw = length(unique(cluster_assignments_raw))
+# cluster_distribution_raw = countmap(cluster_assignments_raw)
 
-println("\n" * "="^50)
-println("CLUSTERING RESULTS - RAW DATA")
-println("="^50)
-println("Number of clusters: $n_clusters_raw")
-println("Cluster distribution: $cluster_distribution_raw")
+# println("\n" * "="^50)
+# println("CLUSTERING RESULTS - RAW DATA")
+# println("="^50)
+# println("Number of clusters: $n_clusters_raw")
+# println("Cluster distribution: $cluster_distribution_raw")
 
-# Calculate performance metrics for Raw Data Analysis
-predicted_labels_raw = zeros(Int, length(revealed_labels))
-for i in 1:length(revealed_labels)
-    if cluster_assignments_raw[i] == cluster_assignments_raw[1]  # Assume first cluster is normal
-        predicted_labels_raw[i] = 0
-    else
-        predicted_labels_raw[i] = 1
-    end
-end
+# # Calculate performance metrics for Raw Data Analysis
+# predicted_labels_raw = zeros(Int, length(revealed_labels))
+# for i in 1:length(revealed_labels)
+#     if cluster_assignments_raw[i] == cluster_assignments_raw[1]  # Assume first cluster is normal
+#         predicted_labels_raw[i] = 0
+#     else
+#         predicted_labels_raw[i] = 1
+#     end
+# end
 
-# Calculate metrics
-ari_raw = adj_rand_index(revealed_labels, predicted_labels_raw)
-precision_raw = sum((revealed_labels .== 1) .& (predicted_labels_raw .== 1)) / max(1, sum(predicted_labels_raw .== 1))
-recall_raw = sum((revealed_labels .== 1) .& (predicted_labels_raw .== 1)) / max(1, sum(revealed_labels .== 1))
-f1_raw = 2 * precision_raw * recall_raw / max(1e-10, precision_raw + recall_raw)
+# # Calculate metrics
+# ari_raw = adj_rand_index(revealed_labels, predicted_labels_raw)
+# precision_raw = sum((revealed_labels .== 1) .& (predicted_labels_raw .== 1)) / max(1, sum(predicted_labels_raw .== 1))
+# recall_raw = sum((revealed_labels .== 1) .& (predicted_labels_raw .== 1)) / max(1, sum(revealed_labels .== 1))
+# f1_raw = 2 * precision_raw * recall_raw / max(1e-10, precision_raw + recall_raw)
 
-println("Performance Metrics (Raw Data):")
-println("ARI: $(round(ari_raw, digits=4))")
-println("Precision: $(round(precision_raw, digits=4))")
-println("Recall: $(round(recall_raw, digits=4))")
-println("F1 Score: $(round(f1_raw, digits=4))")
+# println("Performance Metrics (Raw Data):")
+# println("ARI: $(round(ari_raw, digits=4))")
+# println("Precision: $(round(precision_raw, digits=4))")
+# println("Recall: $(round(recall_raw, digits=4))")
+# println("F1 Score: $(round(f1_raw, digits=4))")
 
-# Confusion Matrix for Raw Data Analysis
-println("\nConfusion Matrix (Raw Data):")
-println("                 Predicted")
-println("                 Normal  Anomaly")
-println("True Normal     $(lpad(sum((revealed_labels .== 0) .& (predicted_labels_raw .== 0)), 6))  $(lpad(sum((revealed_labels .== 0) .& (predicted_labels_raw .== 1)), 6))")
-println("True Anomaly    $(lpad(sum((revealed_labels .== 1) .& (predicted_labels_raw .== 0)), 6))  $(lpad(sum((revealed_labels .== 1) .& (predicted_labels_raw .== 1)), 6))")
+# # Confusion Matrix for Raw Data Analysis
+# println("\nConfusion Matrix (Raw Data):")
+# println("                 Predicted")
+# println("                 Normal  Anomaly")
+# println("True Normal     $(lpad(sum((revealed_labels .== 0) .& (predicted_labels_raw .== 0)), 6))  $(lpad(sum((revealed_labels .== 0) .& (predicted_labels_raw .== 1)), 6))")
+# println("True Anomaly    $(lpad(sum((revealed_labels .== 1) .& (predicted_labels_raw .== 0)), 6))  $(lpad(sum((revealed_labels .== 1) .& (predicted_labels_raw .== 1)), 6))")
 
-# Find partition with maximum F1 score for Raw Data Analysis
-println("\nFinding partition with maximum F1 score (Raw Data)...")
-max_f1_raw, best_partition_raw, best_f1_partition_raw = find_best_f1_partition(results_raw.Z, revealed_labels)
-println("Maximum F1 score found: $(round(max_f1_raw, digits=4))")
+# # Find partition with maximum F1 score for Raw Data Analysis
+# println("\nFinding partition with maximum F1 score (Raw Data)...")
+# max_f1_raw, best_partition_raw, best_f1_partition_raw = find_best_f1_partition(results_raw.Z, revealed_labels)
+# println("Maximum F1 score found: $(round(max_f1_raw, digits=4))")
 
-# Confusion Matrix for F1-maximizing partition (Raw Data)
-println("\nF1-Maximizing Confusion Matrix (Raw Data):")
-println("                 Predicted")
-println("                 Normal  Anomaly")
-println("True Normal     $(lpad(sum((revealed_labels .== 0) .& (best_f1_partition_raw .== 0)), 6))  $(lpad(sum((revealed_labels .== 0) .& (best_f1_partition_raw .== 1)), 6))")
-println("True Anomaly    $(lpad(sum((revealed_labels .== 1) .& (best_f1_partition_raw .== 0)), 6))  $(lpad(sum((revealed_labels .== 1) .& (best_f1_partition_raw .== 1)), 6))")
+# # Confusion Matrix for F1-maximizing partition (Raw Data)
+# println("\nF1-Maximizing Confusion Matrix (Raw Data):")
+# println("                 Predicted")
+# println("                 Normal  Anomaly")
+# println("True Normal     $(lpad(sum((revealed_labels .== 0) .& (best_f1_partition_raw .== 0)), 6))  $(lpad(sum((revealed_labels .== 0) .& (best_f1_partition_raw .== 1)), 6))")
+# println("True Anomaly    $(lpad(sum((revealed_labels .== 1) .& (best_f1_partition_raw .== 0)), 6))  $(lpad(sum((revealed_labels .== 1) .& (best_f1_partition_raw .== 1)), 6))")
 
-# Find MAP estimate for Raw Data Analysis
-println("\nFinding MAP estimate (Raw Data)...")
-map_partition_raw, map_loglik_raw = compute_map_estimate(results_raw.Z, results_raw.loglik)
-println("MAP log-likelihood: $(round(map_loglik_raw, digits=2))")
+# # Find MAP estimate for Raw Data Analysis
+# println("\nFinding MAP estimate (Raw Data)...")
+# map_partition_raw, map_loglik_raw = compute_map_estimate(results_raw.Z, results_raw.loglik)
+# println("MAP log-likelihood: $(round(map_loglik_raw, digits=2))")
 
-# Convert MAP partition to binary labels
-cluster_counts_map_raw = countmap(map_partition_raw)
-largest_cluster_map_raw = argmax(cluster_counts_map_raw)
-predicted_labels_map_raw = [assign == largest_cluster_map_raw ? 0 : 1 for assign in map_partition_raw]
+# # Convert MAP partition to binary labels
+# cluster_counts_map_raw = countmap(map_partition_raw)
+# largest_cluster_map_raw = argmax(cluster_counts_map_raw)
+# predicted_labels_map_raw = [assign == largest_cluster_map_raw ? 0 : 1 for assign in map_partition_raw]
 
-# MAP Confusion Matrix (Raw Data)
-println("\nMAP Confusion Matrix (Raw Data):")
-println("                 Predicted")
-println("                 Normal  Anomaly")
-println("True Normal     $(lpad(sum((revealed_labels .== 0) .& (predicted_labels_map_raw .== 0)), 6))  $(lpad(sum((revealed_labels .== 0) .& (predicted_labels_map_raw .== 1)), 6))")
-println("True Anomaly    $(lpad(sum((revealed_labels .== 1) .& (predicted_labels_map_raw .== 0)), 6))  $(lpad(sum((revealed_labels .== 1) .& (predicted_labels_map_raw .== 1)), 6))")
+# # MAP Confusion Matrix (Raw Data)
+# println("\nMAP Confusion Matrix (Raw Data):")
+# println("                 Predicted")
+# println("                 Normal  Anomaly")
+# println("True Normal     $(lpad(sum((revealed_labels .== 0) .& (predicted_labels_map_raw .== 0)), 6))  $(lpad(sum((revealed_labels .== 0) .& (predicted_labels_map_raw .== 1)), 6))")
+# println("True Anomaly    $(lpad(sum((revealed_labels .== 1) .& (predicted_labels_map_raw .== 0)), 6))  $(lpad(sum((revealed_labels .== 1) .& (predicted_labels_map_raw .== 1)), 6))")
 
-# MH Acceptance Rates for Raw Data Analysis
-println("\nMH Acceptance Rates (Raw Data):")
-println("="^50)
-for (k, param) in enumerate(results_raw.params)
-    # Only print if this cluster has any samples assigned to it
-    cluster_samples = count(==(k), cluster_assignments_raw)
-    if cluster_samples > 0
-        println("Cluster $k (samples: $cluster_samples):")
-        println("  Kernel parameters:")
-        for (param_name, acc_count) in param.acc.kernel
-            rate = acc_count.n > 0 ? round(acc_count.a / acc_count.n, digits=4) : 0.0
-            println("    $param_name: $(acc_count.a)/$(acc_count.n) ($(rate*100)%)")
-        end
-        println("  L matrix: $(param.acc.L.a)/$(param.acc.L.n) ($(param.acc.L.n > 0 ? round(param.acc.L.a / param.acc.L.n, digits=4) * 100 : 0)%)")
-        println("  Eta parameters:")
-        for (m, eta_acc) in enumerate(param.acc.eta)
-            rate = eta_acc.n > 0 ? round(eta_acc.a / eta_acc.n, digits=4) : 0.0
-            println("    eta[$m]: $(eta_acc.a)/$(eta_acc.n) ($(rate*100)%)")
-        end
-        println("  TauB: $(param.acc.tauB.a)/$(param.acc.tauB.n) ($(param.acc.tauB.n > 0 ? round(param.acc.tauB.a / param.acc.tauB.n, digits=4) * 100 : 0)%)")
-    end
-end
+# # MH Acceptance Rates for Raw Data Analysis
+# println("\nMH Acceptance Rates (Raw Data):")
+# println("="^50)
+# for (k, param) in enumerate(results_raw.params)
+#     # Only print if this cluster has any samples assigned to it
+#     cluster_samples = count(==(k), cluster_assignments_raw)
+#     if cluster_samples > 0
+#         println("Cluster $k (samples: $cluster_samples):")
+#         println("  Kernel parameters:")
+#         for (param_name, acc_count) in param.acc.kernel
+#             rate = acc_count.n > 0 ? round(acc_count.a / acc_count.n, digits=4) : 0.0
+#             println("    $param_name: $(acc_count.a)/$(acc_count.n) ($(rate*100)%)")
+#         end
+#         println("  L matrix: $(param.acc.L.a)/$(param.acc.L.n) ($(param.acc.L.n > 0 ? round(param.acc.L.a / param.acc.L.n, digits=4) * 100 : 0)%)")
+#         println("  Eta parameters:")
+#         for (m, eta_acc) in enumerate(param.acc.eta)
+#             rate = eta_acc.n > 0 ? round(eta_acc.a / eta_acc.n, digits=4) : 0.0
+#             println("    eta[$m]: $(eta_acc.a)/$(eta_acc.n) ($(rate*100)%)")
+#         end
+#         println("  TauB: $(param.acc.tauB.a)/$(param.acc.tauB.n) ($(param.acc.tauB.n > 0 ? round(param.acc.tauB.a / param.acc.tauB.n, digits=4) * 100 : 0)%)")
+#     end
+# end
 
 println("\n" * "="^50)
 println("ANALYSIS 2: RAW + DERIVATIVE DATA")
@@ -610,390 +635,201 @@ println("Running WICMAD with Conservative-Balanced configuration on multivariate
 println("Multivariate data shape: $(size(X_multivariate))")
 println("Revealed indices: $(length(revealed_normal_indices))")
 
-results_combined = wicmad(X_multivariate_vec, t_multivariate;
-    n_iter=5000,
-    burn=2000,
-    thin=1,
-    alpha_prior=conservative_balanced_config[:alpha_prior],
-    a_eta=conservative_balanced_config[:a_eta],
-    b_eta=conservative_balanced_config[:b_eta],
-    a_sig=conservative_balanced_config[:a_sig],
-    b_sig=conservative_balanced_config[:b_sig],
-    revealed_idx=revealed_normal_indices,
-    warmup_iters=500,
-    diagnostics=true,
-    wf="sym8"
-)
-
-println("WICMAD Raw + Derivative Data Analysis completed!")
-
-# Extract clustering results for Combined Data Analysis
-cluster_assignments_combined = vec(results_combined.Z[end, :])  # Get final MCMC sample as vector
-n_clusters_combined = length(unique(cluster_assignments_combined))
-cluster_distribution_combined = countmap(cluster_assignments_combined)
-
-println("\n" * "="^50)
-println("CLUSTERING RESULTS - RAW + DERIVATIVE DATA")
-println("="^50)
-println("Number of clusters: $n_clusters_combined")
-println("Cluster distribution: $cluster_distribution_combined")
-
-# Calculate performance metrics for Combined Data Analysis
-predicted_labels_combined = zeros(Int, length(revealed_labels))
-for i in 1:length(revealed_labels)
-    if cluster_assignments_combined[i] == cluster_assignments_combined[1]  # Assume first cluster is normal
-        predicted_labels_combined[i] = 0
-    else
-        predicted_labels_combined[i] = 1
-    end
-end
-
-# Calculate metrics
-ari_combined = adj_rand_index(revealed_labels, predicted_labels_combined)
-precision_combined = sum((revealed_labels .== 1) .& (predicted_labels_combined .== 1)) / max(1, sum(predicted_labels_combined .== 1))
-recall_combined = sum((revealed_labels .== 1) .& (predicted_labels_combined .== 1)) / max(1, sum(revealed_labels .== 1))
-f1_combined = 2 * precision_combined * recall_combined / max(1e-10, precision_combined + recall_combined)
-
-println("Performance Metrics (Raw + Derivative Data):")
-println("ARI: $(round(ari_combined, digits=4))")
-println("Precision: $(round(precision_combined, digits=4))")
-println("Recall: $(round(recall_combined, digits=4))")
-println("F1 Score: $(round(f1_combined, digits=4))")
-
-# Confusion Matrix for Combined Data Analysis
-println("\nConfusion Matrix (Raw + Derivative Data):")
-println("                 Predicted")
-println("                 Normal  Anomaly")
-println("True Normal     $(lpad(sum((revealed_labels .== 0) .& (predicted_labels_combined .== 0)), 6))  $(lpad(sum((revealed_labels .== 0) .& (predicted_labels_combined .== 1)), 6))")
-println("True Anomaly    $(lpad(sum((revealed_labels .== 1) .& (predicted_labels_combined .== 0)), 6))  $(lpad(sum((revealed_labels .== 1) .& (predicted_labels_combined .== 1)), 6))")
-
-# Find partition with maximum F1 score for Combined Data Analysis
-println("\nFinding partition with maximum F1 score (Raw + Derivative Data)...")
-max_f1_combined, best_partition_combined, best_f1_partition_combined = find_best_f1_partition(results_combined.Z, revealed_labels)
-println("Maximum F1 score found: $(round(max_f1_combined, digits=4))")
-
-# Confusion Matrix for F1-maximizing partition (Combined Data)
-println("\nF1-Maximizing Confusion Matrix (Raw + Derivative Data):")
-println("                 Predicted")
-println("                 Normal  Anomaly")
-println("True Normal     $(lpad(sum((revealed_labels .== 0) .& (best_f1_partition_combined .== 0)), 6))  $(lpad(sum((revealed_labels .== 0) .& (best_f1_partition_combined .== 1)), 6))")
-println("True Anomaly    $(lpad(sum((revealed_labels .== 1) .& (best_f1_partition_combined .== 0)), 6))  $(lpad(sum((revealed_labels .== 1) .& (best_f1_partition_combined .== 1)), 6))")
-
-# Find MAP estimate for Combined Data Analysis
-println("\nFinding MAP estimate (Raw + Derivative Data)...")
-map_partition_combined, map_loglik_combined = compute_map_estimate(results_combined.Z, results_combined.loglik)
-println("MAP log-likelihood: $(round(map_loglik_combined, digits=2))")
-
-# Convert MAP partition to binary labels
-cluster_counts_map_combined = countmap(map_partition_combined)
-largest_cluster_map_combined = argmax(cluster_counts_map_combined)
-predicted_labels_map_combined = [assign == largest_cluster_map_combined ? 0 : 1 for assign in map_partition_combined]
-
-# MAP Confusion Matrix (Combined Data)
-println("\nMAP Confusion Matrix (Raw + Derivative Data):")
-println("                 Predicted")
-println("                 Normal  Anomaly")
-println("True Normal     $(lpad(sum((revealed_labels .== 0) .& (predicted_labels_map_combined .== 0)), 6))  $(lpad(sum((revealed_labels .== 0) .& (predicted_labels_map_combined .== 1)), 6))")
-println("True Anomaly    $(lpad(sum((revealed_labels .== 1) .& (predicted_labels_map_combined .== 0)), 6))  $(lpad(sum((revealed_labels .== 1) .& (predicted_labels_map_combined .== 1)), 6))")
-
-# MH Acceptance Rates for Combined Data Analysis
-println("\nMH Acceptance Rates (Raw + Derivative Data):")
-println("="^50)
-for (k, param) in enumerate(results_combined.params)
-    # Only print if this cluster has any samples assigned to it
-    cluster_samples = count(==(k), cluster_assignments_combined)
-    if cluster_samples > 0
-        println("Cluster $k (samples: $cluster_samples):")
-        println("  Kernel parameters:")
-        for (param_name, acc_count) in param.acc.kernel
-            rate = acc_count.n > 0 ? round(acc_count.a / acc_count.n, digits=4) : 0.0
-            println("    $param_name: $(acc_count.a)/$(acc_count.n) ($(rate*100)%)")
-        end
-        println("  L matrix: $(param.acc.L.a)/$(param.acc.L.n) ($(param.acc.L.n > 0 ? round(param.acc.L.a / param.acc.L.n, digits=4) * 100 : 0)%)")
-        println("  Eta parameters:")
-        for (m, eta_acc) in enumerate(param.acc.eta)
-            rate = eta_acc.n > 0 ? round(eta_acc.a / eta_acc.n, digits=4) : 0.0
-            println("    eta[$m]: $(eta_acc.a)/$(eta_acc.n) ($(rate*100)%)")
-        end
-        println("  TauB: $(param.acc.tauB.a)/$(param.acc.tauB.n) ($(param.acc.tauB.n > 0 ? round(param.acc.tauB.a / param.acc.tauB.n, digits=4) * 100 : 0)%)")
-    end
-end
-
-# Summary comparison
+# Comprehensive analysis: F1 scores vs revealed normal percentage
 println("\n" * "="^60)
-println("SUMMARY COMPARISON")
+println("COMPREHENSIVE ANALYSIS: F1 SCORES VS REVEALED PERCENTAGE")
 println("="^60)
-println("Raw Data Analysis - Clusters: $n_clusters_raw, ARI: $(round(ari_raw, digits=4)), F1: $(round(f1_raw, digits=4))")
-println("Raw + Derivative Data Analysis - Clusters: $n_clusters_combined, ARI: $(round(ari_combined, digits=4)), F1: $(round(f1_combined, digits=4))")
 
-println("\n" * "="^50)
-println("GENERATING PLOTS")
+# Define revealed percentages to test (0% to 100% in 5% increments)
+revealed_percentages = collect(0:5:100)
+n_percentages = length(revealed_percentages)
+
+# Storage for results
+dahl_f1_scores = Vector{Float64}(undef, n_percentages)
+map_f1_scores = Vector{Float64}(undef, n_percentages)
+dahl_cluster_counts = Vector{Int}(undef, n_percentages)
+map_cluster_counts = Vector{Int}(undef, n_percentages)
+
+println("Testing $(n_percentages) different revealed percentages: $(revealed_percentages)%")
+println("Each run uses: 100 bootstrap runs, 3000 MCMC iterations (1000 burn-in)")
+println()
+
+# Define bootstrap parameters for the analysis
+bootstrap_runs = 100
+n_iter = 3000
+burn = 1000
+thin = 1
+warmup_iters = 500
+
+# Run analysis for each revealed percentage
+for (i, pct) in enumerate(revealed_percentages)
+println("="^50)
+    println("ANALYSIS $(i)/$(n_percentages): $(pct)% REVEALED NORMAL")
 println("="^50)
 
-# Plot data after clustering for both analyses
-println("Creating data after clustering plots...")
-
-# Raw Data Analysis after clustering
-p_after_raw = plot(title="ArrowHead Dataset - After Clustering (Raw Data)", 
-                xlabel="Time", ylabel="Value", legend=:topright)
-
-for i in 1:size(X_subset, 1)
-    cluster_id = cluster_assignments_raw[i]
-    true_label = revealed_labels[i]
+    # Calculate number of normal samples to reveal
+    local n_revealed_normal = max(0, round(Int, pct/100 * n_normal_used))
+    local revealed_normal_subset = sample(used_normal_indices, min(n_revealed_normal, length(used_normal_indices)), replace=false)
+    revealed_normal_indices_current = findall(idx -> idx in revealed_normal_subset, all_used_indices)
     
-    # Color by cluster, style by true label
-    color = cluster_id == 1 ? :blue : (cluster_id == 2 ? :red : :green)
-    style = true_label == 0 ? :solid : :dash
+    println("Revealing $(length(revealed_normal_indices_current)) out of $(n_normal_used) normal samples ($(round(100 * length(revealed_normal_indices_current) / n_normal_used, digits=1))%)")
     
-    plot!(p_after_raw, X_subset[i, :], color=color, linestyle=style, alpha=0.7,
-          label=cluster_id == 1 ? "Cluster 1" : (cluster_id == 2 ? "Cluster 2" : "Cluster 3"))
-end
-
-savefig(p_after_raw, joinpath(raw_plots_dir, "dataset_after_clustering_raw_data.png"))
-println("Saved: $(joinpath(raw_plots_dir, "dataset_after_clustering_raw_data.png"))")
-
-# Multivariate Data Analysis after clustering - Show both channels separately
-p_after_multivariate = plot(layout=(2, 1), size=(800, 1000), 
-                           title="ArrowHead Dataset - After Clustering (Multivariate Functional Data)")
-
-for i in 1:size(X_subset, 1)
-    cluster_id = cluster_assignments_combined[i]
-    true_label = revealed_labels[i]
+    # Run bootstrap WICMAD with current revealed indices
+    println("Running bootstrap WICMAD...")
+    results_current = wicmad(X_multivariate_vec, t_multivariate;
+        n_iter=n_iter,
+        burn=burn,
+        thin=thin,
+        alpha_prior=conservative_balanced_config[:alpha_prior],
+        a_eta=conservative_balanced_config[:a_eta],
+        b_eta=conservative_balanced_config[:b_eta],
+        a_sig=conservative_balanced_config[:a_sig],
+        b_sig=conservative_balanced_config[:b_sig],
+        revealed_idx=revealed_normal_indices_current,
+        warmup_iters=warmup_iters,
+        diagnostics=true,
+        wf="sym8",
+        # Bootstrap parameters
+        bootstrap_runs=bootstrap_runs,
+        bootstrap_parallel=:threads,
+        bootstrap_seed=42
+    )
     
-    # Color by cluster, style by true label
-    color = cluster_id == 1 ? :blue : (cluster_id == 2 ? :red : :green)
-    style = true_label == 0 ? :solid : :dash
+    # Extract clustering results
+    if hasfield(typeof(results_current), :z_consensus)
+        # Bootstrap results
+        cluster_assignments_dahl = results_current.z_consensus
+        cluster_assignments_map = results_current.z_map_consensus
+        
+        println("Bootstrap completed! Dahl: $(length(unique(cluster_assignments_dahl))) clusters, MAP: $(length(unique(cluster_assignments_map))) clusters")
+    else
+        # Regular MCMC results (fallback)
+        cluster_assignments_dahl = vec(results_current.Z[end, :])
+        cluster_assignments_map = cluster_assignments_dahl
+        println("MCMC completed! $(length(unique(cluster_assignments_dahl))) clusters")
+    end
     
-    # Plot Channel 1 (Raw Data)
-    plot!(p_after_multivariate[1], X_multivariate[i, :, 1], color=color, linestyle=style, alpha=0.7,
-          label=cluster_id == 1 ? "Cluster 1" : (cluster_id == 2 ? "Cluster 2" : "Cluster 3"))
+    # Calculate F1 scores for both Dahl and MAP consensus
+    for (method_name, assignments) in [("Dahl", cluster_assignments_dahl), ("MAP", cluster_assignments_map)]
+        # Convert to binary labels (anomaly detection)
+        cluster_counts = countmap(assignments)
+        largest_cluster = argmax(cluster_counts)
+        predicted_labels = [assign == largest_cluster ? 0 : 1 for assign in assignments]
+        
+        # Calculate F1 score
+        tp = sum((revealed_labels .== 1) .& (predicted_labels .== 1))
+        fp = sum((revealed_labels .== 0) .& (predicted_labels .== 1))
+        fn = sum((revealed_labels .== 1) .& (predicted_labels .== 0))
+        
+        precision = tp > 0 ? tp / (tp + fp) : 0.0
+        recall = tp > 0 ? tp / (tp + fn) : 0.0
+        f1_score = (precision + recall > 0) ? 2 * precision * recall / (precision + recall) : 0.0
+        
+        if method_name == "Dahl"
+            dahl_f1_scores[i] = f1_score
+            dahl_cluster_counts[i] = length(unique(assignments))
+        else
+            map_f1_scores[i] = f1_score
+            map_cluster_counts[i] = length(unique(assignments))
+        end
+        
+        println("$(method_name) F1 Score: $(round(f1_score, digits=4)) (Precision: $(round(precision, digits=4)), Recall: $(round(recall, digits=4)))")
+    end
     
-    # Plot Channel 2 (Derivatives)
-    plot!(p_after_multivariate[2], X_multivariate[i, :, 2], color=color, linestyle=style, alpha=0.7,
-          label=cluster_id == 1 ? "Cluster 1" : (cluster_id == 2 ? "Cluster 2" : "Cluster 3"))
+    println("Completed $(pct)% revealed normal analysis")
+    println()
 end
 
-plot!(p_after_multivariate[1], title="Channel 1: Raw Data", xlabel="Time", ylabel="Value", legend=:topright)
-plot!(p_after_multivariate[2], title="Channel 2: Derivatives", xlabel="Time", ylabel="Derivative", legend=:topright)
-
-savefig(p_after_multivariate, joinpath(multivariate_plots_dir, "dataset_after_clustering_multivariate_data.png"))
-println("Saved: $(joinpath(multivariate_plots_dir, "dataset_after_clustering_multivariate_data.png"))")
-
-# Plot estimated cluster means from both analyses
-println("Creating estimated cluster means plots...")
-
-# Raw Data Analysis - Normal vs Anomaly group means
-p_cluster_means_raw = plot(title="Normal vs Anomaly Group Means (Raw Data Analysis)", 
-                          xlabel="Time", ylabel="Value", legend=:topright, size=(800, 600))
-
-# Determine normal vs anomaly groups based on cluster assignments
-# The largest cluster is typically the normal group
-cluster_counts_raw = countmap(cluster_assignments_raw)
-largest_cluster_raw = argmax(cluster_counts_raw)
-
-# Create binary labels: 0 = normal (largest cluster), 1 = anomaly (other clusters)
-normal_indices_raw = findall(==(largest_cluster_raw), cluster_assignments_raw)
-anomaly_indices_raw = findall(!=(largest_cluster_raw), cluster_assignments_raw)
-
-# Calculate group means using original data
-X_original_subset = X_original[all_used_indices, :]
-
-if length(normal_indices_raw) > 0
-    normal_data = X_original_subset[normal_indices_raw, :]
-    normal_mean = mean(normal_data, dims=1)[:]
-    plot!(p_cluster_means_raw, normal_mean, color=:blue, linewidth=3, 
-          label="Normal Group (n=$(length(normal_indices_raw)))")
+# Print summary table
+println("="^80)
+println("SUMMARY RESULTS")
+println("="^80)
+println("Revealed% | Dahl F1  | MAP F1   | Dahl Clusters | MAP Clusters")
+println("-"^80)
+for i in 1:n_percentages
+    pct = revealed_percentages[i]
+    println("$(lpad(pct, 8))% | $(lpad(round(dahl_f1_scores[i], digits=4), 8)) | $(lpad(round(map_f1_scores[i], digits=4), 8)) | $(lpad(dahl_cluster_counts[i], 13)) | $(lpad(map_cluster_counts[i], 12))")
 end
+println("="^80)
 
-if length(anomaly_indices_raw) > 0
-    anomaly_data = X_original_subset[anomaly_indices_raw, :]
-    anomaly_mean = mean(anomaly_data, dims=1)[:]
-    plot!(p_cluster_means_raw, anomaly_mean, color=:red, linewidth=3, 
-          label="Anomaly Group (n=$(length(anomaly_indices_raw)))")
-end
+# Create F1 score vs revealed percentage plots
+println("\nCreating F1 score vs revealed percentage plots...")
 
-savefig(p_cluster_means_raw, joinpath(raw_plots_dir, "estimated_cluster_means_raw_data.png"))
-println("Saved: $(joinpath(raw_plots_dir, "estimated_cluster_means_raw_data.png"))")
+# Main F1 score comparison plot
+p_f1_comparison = plot(size=(1000, 600), 
+                      title="F1 Score vs Revealed Normal Percentage",
+                      xlabel="Revealed Normal Percentage (%)",
+                      ylabel="F1 Score",
+                      legend=:topright)
 
-# Raw + Derivative Data Analysis - Normal vs Anomaly group means
-p_cluster_means_combined = plot(title="Normal vs Anomaly Group Means (Raw + Derivative Data Analysis)", 
-                               xlabel="Time", ylabel="Value", legend=:topright, size=(800, 600))
+plot!(p_f1_comparison, revealed_percentages, dahl_f1_scores, 
+      label="Dahl Consensus", color=:blue, linewidth=3, marker=:circle, markersize=6)
+plot!(p_f1_comparison, revealed_percentages, map_f1_scores, 
+      label="MAP Consensus", color=:red, linewidth=3, marker=:square, markersize=6)
 
-# Determine normal vs anomaly groups based on cluster assignments
-# The largest cluster is typically the normal group
-cluster_counts_combined = countmap(cluster_assignments_combined)
-largest_cluster_combined = argmax(cluster_counts_combined)
+# Add horizontal line at F1 = 0.5 for reference
+hline!(p_f1_comparison, [0.5], color=:gray, linestyle=:dash, alpha=0.7, label="F1 = 0.5")
 
-# Create binary labels: 0 = normal (largest cluster), 1 = anomaly (other clusters)
-normal_indices_combined = findall(==(largest_cluster_combined), cluster_assignments_combined)
-anomaly_indices_combined = findall(!=(largest_cluster_combined), cluster_assignments_combined)
+savefig(p_f1_comparison, joinpath(plots_dir, "f1_scores_vs_revealed_percentage.png"))
+println("Saved: $(joinpath(plots_dir, "f1_scores_vs_revealed_percentage.png"))")
 
-# Calculate group means using original data
-if length(normal_indices_combined) > 0
-    normal_data = X_original_subset[normal_indices_combined, :]
-    normal_mean = mean(normal_data, dims=1)[:]
-    plot!(p_cluster_means_combined, normal_mean, color=:blue, linewidth=3, 
-          label="Normal Group (n=$(length(normal_indices_combined)))")
-end
+# Cluster count comparison plot
+p_cluster_comparison = plot(size=(1000, 600),
+                           title="Number of Clusters vs Revealed Normal Percentage",
+                           xlabel="Revealed Normal Percentage (%)",
+                           ylabel="Number of Clusters",
+                           legend=:topright)
 
-if length(anomaly_indices_combined) > 0
-    anomaly_data = X_original_subset[anomaly_indices_combined, :]
-    anomaly_mean = mean(anomaly_data, dims=1)[:]
-    plot!(p_cluster_means_combined, anomaly_mean, color=:red, linewidth=3, 
-          label="Anomaly Group (n=$(length(anomaly_indices_combined)))")
-end
+plot!(p_cluster_comparison, revealed_percentages, dahl_cluster_counts,
+      label="Dahl Consensus", color=:blue, linewidth=3, marker=:circle, markersize=6)
+plot!(p_cluster_comparison, revealed_percentages, map_cluster_counts,
+      label="MAP Consensus", color=:red, linewidth=3, marker=:square, markersize=6)
 
-savefig(p_cluster_means_combined, joinpath(multivariate_plots_dir, "estimated_cluster_means_multivariate_data.png"))
-println("Saved: $(joinpath(multivariate_plots_dir, "estimated_cluster_means_multivariate_data.png"))")
+savefig(p_cluster_comparison, joinpath(plots_dir, "cluster_counts_vs_revealed_percentage.png"))
+println("Saved: $(joinpath(plots_dir, "cluster_counts_vs_revealed_percentage.png"))")
 
-# Combined comparison of normal vs anomaly group means from both analyses
-p_cluster_means_comparison = plot(layout=(1, 2), size=(1000, 400))
+# Combined plot with both F1 scores and cluster counts
+p_combined = plot(layout=(2, 1), size=(1000, 800))
 
-# Raw Data Analysis - Normal vs Anomaly group means
-if length(normal_indices_raw) > 0
-    normal_data = X_original_subset[normal_indices_raw, :]
-    normal_mean = mean(normal_data, dims=1)[:]
-    plot!(p_cluster_means_comparison[1], normal_mean, color=:blue, linewidth=2, 
-          label="Normal Group (n=$(length(normal_indices_raw)))")
-end
+# F1 scores subplot
+plot!(p_combined[1], revealed_percentages, dahl_f1_scores, 
+      label="Dahl Consensus", color=:blue, linewidth=3, marker=:circle, markersize=6)
+plot!(p_combined[1], revealed_percentages, map_f1_scores, 
+      label="MAP Consensus", color=:red, linewidth=3, marker=:square, markersize=6)
+hline!(p_combined[1], [0.5], color=:gray, linestyle=:dash, alpha=0.7, label="F1 = 0.5")
+plot!(p_combined[1], title="F1 Score vs Revealed Normal Percentage",
+      xlabel="Revealed Normal Percentage (%)", ylabel="F1 Score", legend=:topright)
 
-if length(anomaly_indices_raw) > 0
-    anomaly_data = X_original_subset[anomaly_indices_raw, :]
-    anomaly_mean = mean(anomaly_data, dims=1)[:]
-    plot!(p_cluster_means_comparison[1], anomaly_mean, color=:red, linewidth=2, 
-          label="Anomaly Group (n=$(length(anomaly_indices_raw)))")
-end
-plot!(p_cluster_means_comparison[1], title="Raw Data Analysis", xlabel="Time", ylabel="Value")
+# Cluster counts subplot
+plot!(p_combined[2], revealed_percentages, dahl_cluster_counts,
+      label="Dahl Consensus", color=:blue, linewidth=3, marker=:circle, markersize=6)
+plot!(p_combined[2], revealed_percentages, map_cluster_counts,
+      label="MAP Consensus", color=:red, linewidth=3, marker=:square, markersize=6)
+plot!(p_combined[2], title="Number of Clusters vs Revealed Normal Percentage",
+      xlabel="Revealed Normal Percentage (%)", ylabel="Number of Clusters", legend=:topright)
 
-# Combined Data Analysis - Normal vs Anomaly group means
-if length(normal_indices_combined) > 0
-    normal_data = X_original_subset[normal_indices_combined, :]
-    normal_mean = mean(normal_data, dims=1)[:]
-    plot!(p_cluster_means_comparison[2], normal_mean, color=:blue, linewidth=2, 
-          label="Normal Group (n=$(length(normal_indices_combined)))")
-end
+savefig(p_combined, joinpath(plots_dir, "comprehensive_analysis_results.png"))
+println("Saved: $(joinpath(plots_dir, "comprehensive_analysis_results.png"))")
 
-if length(anomaly_indices_combined) > 0
-    anomaly_data = X_original_subset[anomaly_indices_combined, :]
-    anomaly_mean = mean(anomaly_data, dims=1)[:]
-    plot!(p_cluster_means_comparison[2], anomaly_mean, color=:red, linewidth=2, 
-          label="Anomaly Group (n=$(length(anomaly_indices_combined)))")
-end
-plot!(p_cluster_means_comparison[2], title="Raw + Derivative Data Analysis", xlabel="Time", ylabel="Value")
+# Find and report optimal revealed percentage
+best_dahl_idx = argmax(dahl_f1_scores)
+best_map_idx = argmax(map_f1_scores)
 
-savefig(p_cluster_means_comparison, joinpath(plots_dir, "estimated_cluster_means_comparison.png"))
-println("Saved: $(joinpath(plots_dir, "estimated_cluster_means_comparison.png"))")
+println("\n" * "="^60)
+println("OPTIMAL RESULTS")
+println("="^60)
+println("Best Dahl Consensus F1 Score: $(round(dahl_f1_scores[best_dahl_idx], digits=4)) at $(revealed_percentages[best_dahl_idx])% revealed")
+println("Best MAP Consensus F1 Score: $(round(map_f1_scores[best_map_idx], digits=4)) at $(revealed_percentages[best_map_idx])% revealed")
+println("="^60)
 
-# MCMC trace plots
-println("Creating MCMC trace plots...")
-
-# Plot traces for both analyses using available fields
-p_trace = plot(layout=(2, 2), size=(800, 600))
-
-# Plot alpha traces
-plot!(p_trace[1], results_raw.alpha, title="Alpha Trace (Raw Data)", 
-      xlabel="Iteration", ylabel="Alpha", color=:blue, linewidth=2)
-plot!(p_trace[2], results_combined.alpha, title="Alpha Trace (Combined Data)", 
-      xlabel="Iteration", ylabel="Alpha", color=:red, linewidth=2)
-
-# Plot log-likelihood traces
-plot!(p_trace[3], results_raw.loglik, title="Log-likelihood Trace (Raw Data)", 
-      xlabel="Iteration", ylabel="Log-likelihood", color=:blue, linewidth=2)
-plot!(p_trace[4], results_combined.loglik, title="Log-likelihood Trace (Combined Data)", 
-      xlabel="Iteration", ylabel="Log-likelihood", color=:red, linewidth=2)
-
-savefig(p_trace, joinpath(plots_dir, "mcmc_trace_comparison.png"))
-println("Saved: $(joinpath(plots_dir, "mcmc_trace_comparison.png"))")
-
-# ACF plots
-println("Creating MCMC ACF plots...")
-
-p_acf = plot(layout=(2, 2), size=(800, 600))
-
-# Raw Data Analysis ACF
-plot!(p_acf[1], autocor(results_raw.alpha), title="Alpha ACF (Raw Data)", label="Alpha")
-plot!(p_acf[2], autocor(results_raw.K_occ), title="N Clusters ACF (Raw Data)", label="N Clusters")
-
-# Combined Data Analysis ACF
-plot!(p_acf[3], autocor(results_combined.alpha), title="Alpha ACF (Raw + Derivative)", label="Alpha")
-plot!(p_acf[4], autocor(results_combined.K_occ), title="N Clusters ACF (Raw + Derivative)", label="N Clusters")
-
-savefig(p_acf, joinpath(plots_dir, "mcmc_acf_comparison.png"))
-println("Saved: $(joinpath(plots_dir, "mcmc_acf_comparison.png"))")
-
-# Comprehensive MCMC diagnostics
-println("Creating comprehensive MCMC diagnostics...")
-
-p_comp = plot(layout=(3, 2), size=(1000, 900))
-
-# Raw Data Analysis comprehensive
-plot!(p_comp[1], results_raw.alpha, title="Alpha Trace (Raw Data)", label="Alpha")
-plot!(p_comp[2], autocor(results_raw.alpha), title="Alpha ACF (Raw Data)", label="Alpha")
-
-# Combined Data Analysis comprehensive
-plot!(p_comp[3], results_combined.alpha, title="Alpha Trace (Raw + Derivative)", label="Alpha")
-plot!(p_comp[4], autocor(results_combined.alpha), title="Alpha ACF (Raw + Derivative)", label="Alpha")
-
-# Combined comparison
-plot!(p_comp[5], [results_raw.alpha, results_combined.alpha], 
-      title="Alpha Comparison", label=["Raw Data" "Raw + Derivative"])
-plot!(p_comp[6], [results_raw.K_occ, results_combined.K_occ], 
-      title="N Clusters Comparison", label=["Raw Data" "Raw + Derivative"])
-
-savefig(p_comp, joinpath(plots_dir, "comprehensive_mcmc_diagnostics_comparison.png"))
-println("Saved: $(joinpath(plots_dir, "comprehensive_mcmc_diagnostics_comparison.png"))")
-
-# Clustering comparison plot
-println("Creating clustering comparison plot...")
-
-p_cluster_comp = plot(layout=(1, 2), size=(1000, 400))
-
-# Raw Data Analysis clustering
-for i in 1:size(X_subset, 1)
-    cluster_id = cluster_assignments_raw[i]
-    color = cluster_id == 1 ? :blue : (cluster_id == 2 ? :red : :green)
-    plot!(p_cluster_comp[1], X_subset[i, :], color=color, alpha=0.7,
-          label=cluster_id == 1 ? "Cluster 1" : (cluster_id == 2 ? "Cluster 2" : "Cluster 3"))
-end
-plot!(p_cluster_comp[1], title="Raw Data Clustering", xlabel="Time", ylabel="Value")
-
-# Combined Data Analysis clustering
-for i in 1:size(X_subset, 1)
-    cluster_id = cluster_assignments_combined[i]
-    color = cluster_id == 1 ? :blue : (cluster_id == 2 ? :red : :green)
-    plot!(p_cluster_comp[2], X_subset[i, :], color=color, alpha=0.7,
-          label=cluster_id == 1 ? "Cluster 1" : (cluster_id == 2 ? "Cluster 2" : "Cluster 3"))
-end
-plot!(p_cluster_comp[2], title="Raw + Derivative Data Clustering", xlabel="Time", ylabel="Value")
-
-savefig(p_cluster_comp, joinpath(plots_dir, "clustering_comparison_both_analyses.png"))
-println("Saved: $(joinpath(plots_dir, "clustering_comparison_both_analyses.png"))")
-
-# Create derivative visualization plot
-println("Creating derivative visualization plot...")
-
-p_deriv = plot(layout=(1, 3), size=(1200, 400))
-
-# Plot original data
-plot!(p_deriv[1], X_subset[1, :], title="Original Data", xlabel="Time", ylabel="Value", color=:blue, linewidth=2)
-
-# Plot derivatives
-derivatives_sample = diff(X_subset[1, :])
-plot!(p_deriv[2], derivatives_sample, title="Derivatives", xlabel="Time", ylabel="Derivative", color=:red, linewidth=2)
-
-# Plot multivariate data (2 channels: raw data and derivatives)
-plot!(p_deriv[3], X_multivariate[1, :, 1], title="Multivariate Data - Channel 1 (Raw)", xlabel="Time", ylabel="Value", color=:blue, linewidth=2)
-plot!(p_deriv[3], X_multivariate[1, :, 2], title="Multivariate Data - Channel 2 (Derivatives)", xlabel="Time", ylabel="Value", color=:red, linewidth=2)
-
-savefig(p_deriv, joinpath(multivariate_plots_dir, "derivative_visualization.png"))
-println("Saved: $(joinpath(multivariate_plots_dir, "derivative_visualization.png"))")
+println("WICMAD Comprehensive Analysis completed!")
 
 println("\n" * "="^60)
 println("ANALYSIS COMPLETED SUCCESSFULLY")
 println("="^60)
-println("All plots saved to: $plots_dir")
-println("Configuration used: $(conservative_balanced_config[:name])")
-println("Alpha prior: $(conservative_balanced_config[:alpha_prior])")
-println("Raw Data Analysis - Clusters: $n_clusters_raw, ARI: $(round(ari_raw, digits=4)), F1: $(round(f1_raw, digits=4))")
-println("Raw + Derivative Data Analysis - Clusters: $n_clusters_combined, ARI: $(round(ari_combined, digits=4)), F1: $(round(f1_combined, digits=4))")
+println("Comprehensive F1 score analysis completed for all revealed percentages (0-100% in 5% increments)")
+println("Results saved to plots directory:")
+println("- f1_scores_vs_revealed_percentage.png")
+println("- cluster_counts_vs_revealed_percentage.png") 
+println("- comprehensive_analysis_results.png")
 println("="^60)
