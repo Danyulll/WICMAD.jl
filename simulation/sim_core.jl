@@ -25,7 +25,7 @@ using WICMAD
 # -----------------------------
 # Global controls
 # -----------------------------
-const P_use        = 128
+const P_use        = 32
 const t_grid       = range(0.0, 1.0; length=P_use) |> collect
 const Δ            = 1/(P_use - 1)
 const σ_noise      = 0.05
@@ -34,8 +34,8 @@ const mc_runs      = 100
 const base_seed    = 0x000000000135CFF1 % UInt64
 
 # Sampler controls
-const n_iter       = 10_000
-const burnin       = 3_000
+const n_iter       = 3_000
+const burnin       = 1_000
 const thin         = 1
 const warmup_iters = 500
 
@@ -276,9 +276,12 @@ function plot_before!(Y_list, t, y_true; title::AbstractString, path::AbstractSt
         idx = findall(==(m), ms)
         idxN = [j for j in idx if cls[j]==0]
         idxA = [j for j in idx if cls[j]==1]
-        plot!(plt[m], ts[idxN], xs[idxN], group=repeat(1:sum(y_true.==0), inner=P), alpha=0.6, color=:blue, label="Normal")
-        plot!(plt[m], ts[idxA], xs[idxA], group=repeat(1:sum(y_true.==1), inner=P), alpha=0.6, color=:red, label="Anomaly")
+        plot!(plt[m], ts[idxN], xs[idxN], group=repeat(1:sum(y_true.==0), inner=P), alpha=0.6, color=:blue, label="")
+        plot!(plt[m], ts[idxA], xs[idxA], group=repeat(1:sum(y_true.==1), inner=P), alpha=0.6, color=:red, label="")
         plot!(plt[m]; title="Channel $m")
+        # Single legend entries
+        plot!(plt[m], [NaN], [NaN], color=:blue, label="Normal")
+        plot!(plt[m], [NaN], [NaN], color=:red, label="Anomaly")
     end
     savefig(plt, path)
 end
@@ -298,9 +301,12 @@ function plot_after!(Y_list, t, pred_anom; title::AbstractString, path::Abstract
         idx = findall(==(m), ms)
         idxN = [j for j in idx if cls[j]==0]
         idxA = [j for j in idx if cls[j]==1]
-        plot!(plt[m], ts[idxN], xs[idxN], group=repeat(1:sum(pred_anom.==0), inner=P), alpha=0.6, color=:blue, label="Normal")
-        plot!(plt[m], ts[idxA], xs[idxA], group=repeat(1:sum(pred_anom.==1), inner=P), alpha=0.6, color=:red, label="Anomaly")
+        plot!(plt[m], ts[idxN], xs[idxN], group=repeat(1:sum(pred_anom.==0), inner=P), alpha=0.6, color=:blue, label="")
+        plot!(plt[m], ts[idxA], xs[idxA], group=repeat(1:sum(pred_anom.==1), inner=P), alpha=0.6, color=:red, label="")
         plot!(plt[m]; title="Channel $m")
+        # Single legend entries
+        plot!(plt[m], [NaN], [NaN], color=:blue, label="Normal")
+        plot!(plt[m], [NaN], [NaN], color=:red, label="Anomaly")
     end
     savefig(plt, path)
 end
