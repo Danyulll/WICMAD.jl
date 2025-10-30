@@ -23,7 +23,9 @@ export scale_t01, dist_rows, nloc, ensure_dyadic_J, logit_safe, invlogit_safe,
        AcceptCount, AcceptanceTracker, WaveletParams, ClusterParams,
        draw_empty_acc, draw_new_cluster_params, ensure_complete_cache!,
        # Kernel exports
-       KernelConfig, make_kernels
+       KernelConfig, make_kernels,
+       # Process config for residual model
+       ProcessConfig
 
 # =============================================================================
 # KERNEL FUNCTIONS (from kernels.jl) - MOVED TO TOP TO AVOID FORWARD REFERENCE ISSUES
@@ -36,6 +38,16 @@ struct KernelConfig
     prior::Function
     pstar::Function
     prop_sd::Dict{Symbol,Float64}
+end
+
+# =============================================================================
+# PROCESS CONFIGURATION
+# =============================================================================
+
+struct ProcessConfig
+    process::Symbol   # :gp or :tprocess
+    nu_df::Float64    # degrees of freedom for t-process
+    learn_nu::Bool    # toggle MH update for ν
 end
 
 function k_sqexp(t, l_scale)

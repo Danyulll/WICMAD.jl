@@ -1,0 +1,463 @@
+#!/usr/bin/env julia
+
+# Ensure we use the repository root project and have deps available
+begin
+using Pkg
+Pkg.activate(joinpath(@__DIR__, ".."))
+Pkg.instantiate()
+end
+
+# Report threads available
+using Base.Threads
+@info "Available Julia threads: $(nthreads())"
+
+# ------------------------------------------------------------
+# WICMAD simulation experiment runner (NO FPCA)
+# Shared core (helpers, dataset registry, and runner function)
+# ------------------------------------------------------------
+
+using Random, LinearAlgebra, Statistics, Printf, Dates, DelimitedFiles
+using StatsBase: countmap
+using DataFrames, CSV
+using Plots
+using WICMAD
+
+# -----------------------------
+# Global controls
+# -----------------------------
+const P_use        = 128
+const t_grid       = range(0.0, 1.0; length=P_use) |> collect
+const Δ            = 1/(P_use - 1)
+const σ_noise      = 0.05
+
+const mc_runs      = 100
+const base_seed    = 0x000000000135CFF1 % UInt64
+
+# Sampler controls
+const n_iter       = 10_000
+const burnin       = 3_000
+const thin         = 1
+const warmup_iters = 500
+
+# Semi-supervised: reveal 15% normals
+const reveal_prop  = 0.15
+
+# Output (bucketed per top-level script name, e.g., sim1, sim2, ...)
+const timestamp    = Dates.format(now(), "yyyymmdd_HHMMSS")
+const sim_name     = splitext(basename(PROGRAM_FILE))[1]
+const out_root     = joinpath("simstudy_results_nofpca", timestamp, sim_name)
+const png_dir      = joinpath(out_root, "png")
+const metrics_csv  = joinpath(out_root, "summary_metrics.csv")
+const perrun_csv   = joinpath(out_root, "metrics_per_run.csv")
+
+mkpath(png_dir)
+@info "Writing outputs to: $(abspath(out_root))"
+
+# -----------------------------
+# Mean and kernel
+# -----------------------------
+mean_fun(t) = 0.6 .* sin.(4π .* t) .+ 0.25 .* cos.(10π .* t) .+ 0.1 .* t
+
+"""
+Quasi-periodic + long-scale SE kernel:
+k(t,t') = sig1^2 * SE(ℓ1) ⊙ PER(p, ℓp) + sig2^2 * SE(ℓ2)
+"""
+function k_qp(t::AbstractVector, tp::AbstractVector;
+              ell1=0.15, sig1_sq=1.0, p=0.30, ellp=0.30,
+              ell2=0.60, sig2_sq=0.4)
+    dt  = reshape(t, :, 1) .- reshape(tp, 1, :)
+    se1 = @. exp(-(dt^2) / (2 * ell1^2))
+    per = @. exp(- 2 * (sin(π * dt / p))^2 / (ellp^2))
+    se2 = @. exp(-(dt^2) / (2 * ell2^2))
+    sig1_sq .* (se1 .* per) .+ sig2_sq .* se2
+end
+
+"""
+Draw GP curves (N functions) on grid t with mean mu_fun and covariance k_fun.
+Returns an N×P matrix (rows are functions), with iid N(0, σ_eps^2) noise added.
+"""
+function gp_draw_matrix(N::Int, t::AbstractVector,
+                        mu_fun::Function, k_fun::Function,
+                        σ_eps::Real)
+    P  = length(t)
+    μ  = mu_fun(t)
+    K  = k_fun(t, t)
+    Kc = Symmetric(K + 1e-8I)
+    L  = cholesky(Kc).L
+    Z  = randn(P, N)
+    G  = μ .+ L * Z
+    X  = permutedims(G) .+ σ_eps .* randn(N, P)
+    return X
+end
+
+# -----------------------------
+# Anomaly perturbations
+# -----------------------------
+function add_isolated(xrow::AbstractVector, t::AbstractVector)
+    P  = length(t)
+    i0 = rand(3:(P-2))
+    w  = rand(0.3*Δ:0.1*Δ:0.8*Δ)
+    S  = rand((-1, +1))
+    A  = rand(8.0:0.1:12.0)
+    bump = @. S * A * exp(-(t - t[i0])^2 / (2w^2))
+    return xrow .+ bump
+end
+
+function add_mag1(xrow::AbstractVector)
+    S = rand((-1, +1))
+    A = rand(12.0:0.1:15.0)
+    return xrow .+ S*A
+end
+
+function add_mag2(xrow::AbstractVector, t::AbstractVector)
+    P      = length(t)
+    λ      = floor(Int, 0.10P)
+    s      = rand(1:(P - λ + 1))
+    S      = rand((-1, +1))
+    A      = rand(10.0:0.1:15.0)
+    rfun(u) = 0.5 * (1 - cos(π * u))
+    bump   = zeros(Float64, P)
+    idx    = s:(s + λ - 1)
+    u      = (collect(0:(length(idx)-1))) ./ (λ - 1)
+    bump[idx] .= S .* A .* rfun.(u)
+    return xrow .+ bump
+end
+
+function add_shape(xrow::AbstractVector, t::AbstractVector)
+    U = rand(0.2:0.01:2.0)
+    return xrow .+ 3 .* sin.(2π .* U .* t)
+end
+
+# -----------------------------
+# Dataset generators
+# -----------------------------
+function make_univariate_dataset(; N::Int=40, anomaly_type::Symbol=:isolated,
+                                 t::AbstractVector=t_grid)
+    X      = gp_draw_matrix(N, t, mean_fun, k_qp, σ_noise)
+    y_true = zeros(Int, N)
+    n_anom = max(1, round(Int, 0.10N))
+    idx_anom = randperm(N)[1:n_anom]
+
+    Xpert = copy(X)
+    for i in idx_anom
+        xi = @view X[i, :]
+        if anomaly_type == :isolated
+            Xpert[i, :] = add_isolated(xi, t)
+        elseif anomaly_type == :mag1
+            Xpert[i, :] = add_mag1(xi)
+        elseif anomaly_type == :mag2
+            Xpert[i, :] = add_mag2(xi, t)
+        elseif anomaly_type == :shape
+            Xpert[i, :] = add_shape(xi, t)
+        else
+            error("Unknown anomaly type: $anomaly_type")
+        end
+    end
+    y_true[idx_anom] .= 1
+
+    Y_list = [ reshape(@view(Xpert[i, :]), (length(t), 1)) for i in 1:N ]
+    return (; Y_list, t, y_true)
+end
+
+function make_multivariate_dataset(; N::Int=40, regime::Symbol=:one,
+                                   t::AbstractVector=t_grid)
+    P = length(t)
+    U1 = gp_draw_matrix(N, t, mean_fun, k_qp, 0.0)
+    U2 = gp_draw_matrix(N, t, mean_fun, k_qp, 0.0)
+    A  = [1.0  0.4;
+          0.2  1.0;
+          0.7 -0.3]
+
+    Y = Vector{Matrix{Float64}}(undef, N)
+    for i in 1:N
+        Ui = hcat(@view(U1[i, :]), @view(U2[i, :]))
+        Xi = Ui * A'
+        Xi .+= σ_noise .* randn(P, 3)
+        Y[i] = Xi
+    end
+
+    y_true   = zeros(Int, N)
+    n_anom   = max(1, round(Int, 0.10N))
+    idx_anom = randperm(N)[1:n_anom]
+    y_true[idx_anom] .= 1
+
+    types = (:isolated, :mag1, :mag2, :shape)
+
+    apply_perturb(row::AbstractVector, type::Symbol) = begin
+        if     type == :isolated; add_isolated(row, t)
+        elseif type == :mag1;     add_mag1(row)
+        elseif type == :mag2;     add_mag2(row, t)
+        elseif type == :shape;    add_shape(row, t)
+        else  row end
+    end
+
+    for i in idx_anom
+        Xi = copy(Y[i])
+        if regime == :one
+            ch   = rand(1:3)
+            type = rand(types)
+            Xi[:, ch] = apply_perturb(@view(Xi[:, ch]), type)
+        elseif regime == :two
+            chs  = sort(randperm(3)[1:2])
+            type = rand(types)
+            for ch in chs
+                Xi[:, ch] = apply_perturb(@view(Xi[:, ch]), type)
+            end
+        elseif regime == :three
+            for ch in 1:3
+                type = rand(types)
+                Xi[:, ch] = apply_perturb(@view(Xi[:, ch]), type)
+            end
+        else
+            error("Unknown regime: $regime")
+        end
+        Y[i] = Xi
+    end
+
+    return (; Y_list=Y, t, y_true)
+end
+
+# -----------------------------
+# Derivatives transform
+# -----------------------------
+function derivatives_transform(Y_list::Vector{<:AbstractMatrix}, t::AbstractVector)
+    N = length(Y_list)
+    P = length(t)
+    function fd1(x::AbstractVector)
+        d1 = similar(x)
+        d1[1]   = (x[2] - x[1]) / (t[2] - t[1])
+        d1[end] = (x[end] - x[end-1]) / (t[end] - t[end-1])
+        @inbounds for i in 2:P-1
+            d1[i] = (x[i+1] - x[i-1]) / (t[i+1] - t[i-1])
+        end
+        d1
+    end
+    function fd2(x::AbstractVector)
+        d2 = similar(x)
+        d2[1]   = (x[3] - 2x[2] + x[1]) / ((t[2]-t[1])^2)
+        d2[end] = (x[end] - 2x[end-1] + x[end-2]) / ((t[end]-t[end-1])^2)
+        @inbounds for i in 2:P-1
+            dt1 = t[i] - t[i-1]; dt2 = t[i+1] - t[i]
+            d2[i] = 2 * ( (x[i+1]-x[i]) / (dt2*(dt1+dt2)) - (x[i]-x[i-1]) / (dt1*(dt1+dt2)) )
+        end
+        d2
+    end
+    out = Vector{Matrix{Float64}}(undef, N)
+    for i in 1:N
+        Yi = Y_list[i]
+        M  = size(Yi, 2)
+        O  = zeros(Float64, P, 3M)
+        for m in 1:M
+            col = @view Yi[:, m]
+            O[:, 3(m-1) + 1] = col
+            O[:, 3(m-1) + 2] = fd1(col)
+            O[:, 3(m-1) + 3] = fd2(col)
+        end
+        out[i] = O
+    end
+    return out
+end
+
+# -----------------------------
+# Plot helpers
+# -----------------------------
+function plot_before!(Y_list, t, y_true; title::AbstractString, path::AbstractString)
+    P = length(t)
+    M = size(Y_list[1], 2)
+    xs = Float64[]; ts = Float64[]; ms = Int[]; cls = Int[]
+    for (i, Xi) in enumerate(Y_list)
+        lab = y_true[i]
+        for m in 1:M, p in 1:P
+            push!(xs, Xi[p, m]); push!(ts, t[p]); push!(ms, m); push!(cls, lab)
+        end
+    end
+    plt = plot(layout=(M,1), size=(800, 200*M), legend=:topright, title=title)
+    for m in 1:M
+        idx = findall(==(m), ms)
+        idxN = [j for j in idx if cls[j]==0]
+        idxA = [j for j in idx if cls[j]==1]
+        plot!(plt[m], ts[idxN], xs[idxN], group=repeat(1:sum(y_true.==0), inner=P), alpha=0.6, color=:blue, label="Normal")
+        plot!(plt[m], ts[idxA], xs[idxA], group=repeat(1:sum(y_true.==1), inner=P), alpha=0.6, color=:red, label="Anomaly")
+        plot!(plt[m]; title="Channel $m")
+    end
+    savefig(plt, path)
+end
+
+function plot_after!(Y_list, t, pred_anom; title::AbstractString, path::AbstractString)
+    P = length(t)
+    M = size(Y_list[1], 2)
+    xs = Float64[]; ts = Float64[]; ms = Int[]; cls = Int[]
+    for (i, Xi) in enumerate(Y_list)
+        lab = pred_anom[i]
+        for m in 1:M, p in 1:P
+            push!(xs, Xi[p, m]); push!(ts, t[p]); push!(ms, m); push!(cls, lab)
+        end
+    end
+    plt = plot(layout=(M,1), size=(800, 200*M), legend=:topright, title=title)
+    for m in 1:M
+        idx = findall(==(m), ms)
+        idxN = [j for j in idx if cls[j]==0]
+        idxA = [j for j in idx if cls[j]==1]
+        plot!(plt[m], ts[idxN], xs[idxN], group=repeat(1:sum(pred_anom.==0), inner=P), alpha=0.6, color=:blue, label="Normal")
+        plot!(plt[m], ts[idxA], xs[idxA], group=repeat(1:sum(pred_anom.==1), inner=P), alpha=0.6, color=:red, label="Anomaly")
+        plot!(plt[m]; title="Channel $m")
+    end
+    savefig(plt, path)
+end
+
+# -----------------------------
+# Metrics
+# -----------------------------
+function metrics_from_preds(y_true::Vector{Int}, pred_anom::Vector{Int})
+    @assert length(y_true) == length(pred_anom)
+    tn = sum((y_true .== 0) .& (pred_anom .== 0))
+    fp = sum((y_true .== 0) .& (pred_anom .== 1))
+    fn = sum((y_true .== 1) .& (pred_anom .== 0))
+    tp = sum((y_true .== 1) .& (pred_anom .== 1))
+    acc = (tp + tn) / max(1, tp + tn + fp + fn)
+    prec = (tp + fp) == 0 ? NaN : tp / (tp + fp)
+    rec  = (tp + fn) == 0 ? NaN : tp / (tp + fn)
+    f1   = (isnan(prec) || isnan(rec) || (prec + rec) == 0) ? NaN : 2 * prec * rec / (prec + rec)
+    return (accuracy=acc, precision=prec, recall=rec, f1=f1)
+end
+
+# -----------------------------
+# One dataset for one MC seed
+# -----------------------------
+function run_one(dataset_label::AbstractString, dataset_title::AbstractString,
+                 representation::Symbol, make_data_fn::Function, mc_idx::Int)
+    Random.seed!(UInt64(base_seed) + UInt64(mc_idx))
+    dat    = make_data_fn()
+    Y_raw  = dat.Y_list
+    t      = dat.t
+    y_true = dat.y_true
+    N      = length(Y_raw)
+
+    Y_list = if representation == :raw
+        Y_raw
+    elseif representation == :derivatives
+        derivatives_transform(Y_raw, t)
+    else
+        error("Unknown representation: $representation")
+    end
+
+    for i in 1:length(Y_list)
+        Xi = Y_list[i]
+        @inbounds for j in eachindex(Xi)
+            if !isfinite(Xi[j]); Xi[j] = 0.0; end
+        end
+        Y_list[i] = Xi
+    end
+
+    normals_idx = findall(==(0), y_true)
+    n_reveal    = max(1, floor(Int, reveal_prop * length(normals_idx)))
+    reveal_idx  = n_reveal == 0 ? Int[] : rand(normals_idx, n_reveal)
+
+    res = nothing
+    try
+        res = WICMAD.wicmad(
+            Y_list, t;
+            n_iter=n_iter, burn=burnin, thin=thin, warmup_iters=warmup_iters,
+            bootstrap_runs=0,
+            revealed_idx=reveal_idx, unpin=false
+        )
+    catch e
+        @warn "Error in WICMAD for dataset $dataset_label: $(e)"
+        Zs = fill(1, n_iter - burnin, N)
+        res = (; Z=Zs, K_occ=fill(1, size(Zs,1)), loglik=zeros(size(Zs,1)))
+    end
+
+    dahl   = WICMAD.dahl_from_res(res)
+    z_hat  = dahl.z_hat
+    normal_label = let
+        labs = z_hat[reveal_idx]
+        if isempty(labs)
+            labs_all = z_hat
+            counts = countmap(labs_all)
+            argmax(counts)
+        else
+            counts = countmap(labs)
+            argmax(counts)
+        end
+    end
+    pred_anom = map(l -> l == normal_label ? 0 : 1, z_hat)
+
+    if mc_idx == 1
+        tag = string(dataset_label, "_", Symbol(representation))
+        plot_before!(Y_list, t, y_true; title=dataset_title,
+                     path=joinpath(png_dir, string(tag, "_before.png")))
+        plot_after!(Y_list, t, pred_anom; title=dataset_title,
+                    path=joinpath(png_dir, string(tag, "_after.png")))
+    end
+
+    met = metrics_from_preds(y_true, pred_anom)
+    return (dataset=dataset_label,
+            representation=String(representation),
+            mc_run=mc_idx,
+            accuracy=met.accuracy,
+            precision=met.precision,
+            recall=met.recall,
+            f1=met.f1)
+end
+
+# -----------------------------
+# Dataset registry
+# -----------------------------
+univariate_specs = [
+    (id="uni_isolated",  title="Isolated",
+     fn=() -> make_univariate_dataset(; anomaly_type=:isolated, t=t_grid)),
+    (id="uni_mag1",      title="Magnitude I",
+     fn=() -> make_univariate_dataset(; anomaly_type=:mag1, t=t_grid)),
+    (id="uni_mag2",      title="Magnitude II",
+     fn=() -> make_univariate_dataset(; anomaly_type=:mag2, t=t_grid)),
+    (id="uni_shape",     title="Shape",
+     fn=() -> make_univariate_dataset(; anomaly_type=:shape, t=t_grid))
+]
+
+multivariate_specs = [
+    (id="mv_one_channel",    title="One Channel",
+     fn=() -> make_multivariate_dataset(; regime=:one, t=t_grid)),
+    (id="mv_two_channels",   title="Two Channels",
+     fn=() -> make_multivariate_dataset(; regime=:two, t=t_grid)),
+    (id="mv_three_channels", title="Three Channels",
+     fn=() -> make_multivariate_dataset(; regime=:three, t=t_grid))
+]
+
+dataset_specs = NamedTuple[]
+for spec in univariate_specs
+    push!(dataset_specs, (id=string(spec.id, "_raw"),  title=spec.title, representation=:raw,         fn=spec.fn))
+    push!(dataset_specs, (id=string(spec.id, "_deriv"), title=spec.title, representation=:derivatives, fn=spec.fn))
+end
+for spec in multivariate_specs
+    push!(dataset_specs, (id=spec.id, title=spec.title, representation=:raw, fn=spec.fn))
+end
+
+# -----------------------------
+# Runner function (optionally filter dataset ids)
+# -----------------------------
+function run_datasets(filter_ids::Union{Nothing,Vector{String}}=nothing)
+    rows = Vector{NamedTuple}(undef, 0)
+    selected = isnothing(filter_ids) ? dataset_specs : filter(s -> s.id in filter_ids, dataset_specs)
+    for spec in selected
+        @info "[Dataset: $(spec.id)] Running $(mc_runs) MC replications ($(spec.representation))..."
+        rows_spec = Vector{NamedTuple}(undef, mc_runs)
+        Threads.@threads for mc_idx in 1:mc_runs
+            rows_spec[mc_idx] = run_one(spec.id, spec.title, spec.representation, spec.fn, mc_idx)
+        end
+        append!(rows, rows_spec)
+    end
+    df = DataFrame(rows)
+    summary_df = combine(groupby(df, [:dataset, :representation])) do sdf
+        (; accuracy=mean(skipmissing(sdf.accuracy)),
+           precision=mean(skipmissing(sdf.precision)),
+           recall=mean(skipmissing(sdf.recall)),
+           f1=mean(skipmissing(sdf.f1)))
+    end
+    CSV.write(metrics_csv, summary_df)
+    @info "Saved summary metrics CSV to: $(abspath(metrics_csv))"
+    CSV.write(perrun_csv, df)
+    @info "Saved per-run metrics CSV to: $(abspath(perrun_csv))"
+    @info "PNG directory (first-run visualizations): $(abspath(png_dir))"
+end
+
+

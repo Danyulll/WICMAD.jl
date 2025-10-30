@@ -15,6 +15,7 @@ using Dates
 include("utils.jl")
 include("wavelets.jl")
 include("icm_cache.jl")
+include("tprocess.jl")
 include("mh_updates.jl")
 include("postprocessing.jl")
 include("plotting.jl")
@@ -28,6 +29,7 @@ using .MHUpdates
 using .PostProcessing
 using .Plotting
 using .KernelSelection
+using .TProcess
 
 # Main exports
 export wicmad, adj_rand_index, choose2, init_diagnostics,
@@ -137,10 +139,27 @@ function wicmad(
     bootstrap_seed::Int = 2025,
     parallel::Bool = false,
     rng::AbstractRNG = Random.default_rng(),
+    # Process model options
+    process::Symbol = :gp,
+    nu_df::Float64 = 5.0,
+    learn_nu::Bool = false,
+    mh_step_log_nu::Float64 = 0.1,
+    # Optional initialization of cluster labels
+    z_init::Union{Nothing,Vector{Int}} = nothing,
 )
     # Bootstrap dispatch: if bootstrap_runs > 0, use bootstrap driver
     if bootstrap_runs > 0
-        return wicmad_bootstrap_driver(Y, t;
+        # Ensure Y elements are matrices for the bootstrap driver
+        N_bt = length(Y)
+        Y_mats_bt = Vector{Matrix{Float64}}(undef, N_bt)
+        for i in 1:N_bt
+            if isa(Y[i], AbstractVector)
+                Y_mats_bt[i] = reshape(Float64.(Y[i]), :, 1)
+            else
+                Y_mats_bt[i] = Matrix{Float64}(Y[i])
+            end
+        end
+        return wicmad_bootstrap_driver(Y_mats_bt, t;
             bootstrap_runs=bootstrap_runs,
             bootstrap_method=bootstrap_method,
             bootstrap_fraction=bootstrap_fraction,
@@ -156,7 +175,7 @@ function wicmad(
             a_sig=a_sig, b_sig=b_sig, a_tau=a_tau, b_tau=b_tau,
             a_eta=a_eta, b_eta=b_eta, diagnostics=diagnostics,
             track_ids=track_ids, monitor_levels=monitor_levels,
-            wf_candidates=wf_candidates, rng=rng)
+            wf_candidates=wf_candidates, rng=rng, z_init=z_init)
     end
 
     n_iter < 2 && error("n_iter must be >= 2")
@@ -202,7 +221,9 @@ function wicmad(
 
     kernels = make_kernels(add_bias_variants = false)
     alpha = rand(rng, Gamma(alpha_prior[1], 1 / alpha_prior[2]))
-    v = [rand(rng, Beta(1, alpha)) for _ in 1:K_init]
+    # If z_init provided, ensure at least that many initial sticks
+    K_from_init = z_init === nothing ? K_init : max(K_init, maximum(relabel_to_consecutive(z_init)))
+    v = [rand(rng, Beta(1, alpha)) for _ in 1:K_from_init]
     params = ClusterParams[]
     for _ in 1:length(v)
         cp = draw_new_cluster_params(M, P, t_scaled, kernels; wf = wf, J = Jv, boundary = boundary)
@@ -212,11 +233,27 @@ function wicmad(
         push!(params, cp)
     end
 
-    z = [rand(rng, 1:length(v)) for _ in 1:N]
-    if !isempty(revealed_idx)
-        for idx in revealed_idx
-            if 1 <= idx <= N
-                z[idx] = 1
+    # Initialize labels
+    if z_init !== nothing
+        z = relabel_to_consecutive(Vector{Int}(z_init))
+        length(z) == N || error("z_init length must match number of observations")
+        # Expand sticks/params if needed
+        needed_K = maximum(z)
+        while length(v) < needed_K
+            push!(v, rand(rng, Beta(1, alpha)))
+            cp = draw_new_cluster_params(M, P, t_scaled, kernels; wf = wf, J = Jv, boundary = boundary)
+            cp.cache = ICMCacheState()
+            cp = ensure_complete_cache!(cp, kernels, t_scaled, M)
+            cp.cache = build_icm_cache(t_scaled, kernels[cp.kern_idx], cp.thetas[cp.kern_idx], cp.L, cp.eta, cp.tau_B, cp.cache)
+            push!(params, cp)
+        end
+    else
+        z = [rand(rng, 1:length(v)) for _ in 1:N]
+        if !isempty(revealed_idx)
+            for idx in revealed_idx
+                if 1 <= idx <= N
+                    z[idx] = 1
+                end
             end
         end
     end
@@ -252,18 +289,14 @@ function wicmad(
     end
 
     sidx = 0
+    proc_cfg = Utils.ProcessConfig(process, nu_df, learn_nu)
+    # Always maintain per-curve scale vector; for GP this remains all ones
+    lambda = ones(Float64, N)
     
-    # Progress reporting setup
-    if parallel
-        println("Starting WICMAD MCMC with $n_iter iterations (parallel mode)...")
-        print_interval = max(1, n_iter ÷ 20)  # Print every 5% of iterations
-    else
-        # Progress bar setup
-        progress_bar = Progress(n_iter, desc="WICMAD MCMC", 
-                               showspeed=true, 
-                               color=:blue)
-        println("Starting WICMAD MCMC with $n_iter iterations...")
-    end
+    # Progress reporting setup (no progress bar; periodic thread-aware prints)
+    print_interval = max(1, n_iter ÷ 20)  # Print every 5% of iterations
+    mode_tag = parallel ? "parallel" : "single-thread"
+    println("Starting WICMAD MCMC with $n_iter iterations ($mode_tag mode)...")
 
     for iter in 1:n_iter
         pi = Utils.stick_to_pi(v)
@@ -296,7 +329,17 @@ function wicmad(
             logw = Vector{Float64}(undef, length(S))
             for (idx_s, k) in enumerate(S)
                 ensure_mu_cached!(k, iter)
-                ll = ll_curve_k(k, Y_mats[i], params[k].mu_cached)
+                if process == :tprocess
+                    # Build cache and compute TP loglik with per-curve lambda
+                    cp = params[k]
+                    kc = kernels[cp.kern_idx]
+                    kp = cp.thetas[cp.kern_idx]
+                    cache = build_icm_cache(t_scaled, kc, kp, cp.L, cp.eta, cp.tau_B, cp.cache)
+                    params[k].cache = cache
+                    ll = TProcess.loglik_residual_tp_matrix(Y_mats[i] - params[k].mu_cached, cache, lambda[i])
+                else
+                    ll = ll_curve_k(k, Y_mats[i], params[k].mu_cached)
+                end
                 logw[idx_s] = log(pi[k]) + ll
             end
             logw .-= maximum(logw)
@@ -323,11 +366,25 @@ function wicmad(
             params[k].mu_cached = mu_k
             params[k].mu_cached_iter = iter
             Yk = [Y_mats[ii] for ii in idx]
-            params = cc_switch_kernel_eig(k, params, kernels, t_scaled, Yk)
-            params = mh_update_kernel_eig(k, params, kernels, t_scaled, Yk, a_eta, b_eta)
-            params = mh_update_L_eig(k, params, kernels, t_scaled, Yk, mh_step_L)
-            params = mh_update_eta_eig(k, params, kernels, t_scaled, Yk, mh_step_eta, a_eta, b_eta)
-            params = mh_update_tauB_eig(k, params, kernels, t_scaled, Yk, mh_step_tauB)
+            params = cc_switch_kernel_eig(k, params, kernels, t_scaled, Yk, process, lambda[idx])
+            params = mh_update_kernel_eig(k, params, kernels, t_scaled, Yk, a_eta, b_eta, process, lambda[idx])
+            params = mh_update_L_eig(k, params, kernels, t_scaled, Yk, mh_step_L, process, lambda[idx])
+            params = mh_update_eta_eig(k, params, kernels, t_scaled, Yk, mh_step_eta, a_eta, b_eta, process, lambda[idx])
+            params = mh_update_tauB_eig(k, params, kernels, t_scaled, Yk, mh_step_tauB, process, lambda[idx])
+        end
+
+        # T-process latent scale updates (after params and mu are updated)
+        if process == :tprocess
+            residuals = Vector{Matrix{Float64}}(undef, N)
+            @inbounds for n in 1:N
+                kn = z[n]
+                ensure_mu_cached!(kn, iter)
+                residuals[n] = Y_mats[n] - params[kn].mu_cached
+            end
+            TProcess.sample_lambda!(lambda, proc_cfg.nu_df, z, residuals, params)
+            if proc_cfg.learn_nu
+                proc_cfg = Utils.ProcessConfig(process, TProcess.mh_update_nu!(proc_cfg.nu_df, lambda, mh_step_log_nu), true)
+            end
         end
 
         Kocc = length(unique(z))
@@ -344,14 +401,10 @@ function wicmad(
             alpha = rand(rng, Gamma(alpha_prior[1] + Kocc - 1, 1 / (alpha_prior[2] - log(eta_aux))))
         end
 
-        # Update progress reporting
-        if parallel
-            if iter % print_interval == 0 || iter == n_iter
-                percentage = round(100 * iter / n_iter, digits=1)
-                println("Thread $(Threads.threadid()): $iter/$n_iter ($percentage%) - Clusters: $Kocc")
-            end
-        else
-            next!(progress_bar, showvalues=[(:iterations, iter), (:clusters, Kocc)])
+        # Update progress reporting (periodic, per thread)
+        if iter % print_interval == 0 || iter == n_iter
+            percentage = round(100 * iter / n_iter, digits=1)
+            println("Thread $(Threads.threadid()): $iter/$n_iter ($percentage%) - Clusters: $Kocc")
         end
 
         if keep > 0 && iter > burn && ((iter - burn) % thin == 0)
@@ -368,7 +421,16 @@ function wicmad(
             for i in 1:N
                 ki = z[i]
                 ensure_mu_cached!(ki, iter)
-                totll += ll_curve_k(ki, Y_mats[i], params[ki].mu_cached)
+                if process == :tprocess
+                    cp = params[ki]
+                    kc = kernels[cp.kern_idx]
+                    kp = cp.thetas[cp.kern_idx]
+                    cache = build_icm_cache(t_scaled, kc, kp, cp.L, cp.eta, cp.tau_B, cp.cache)
+                    params[ki].cache = cache
+                    totll += TProcess.loglik_residual_tp_matrix(Y_mats[i] - params[ki].mu_cached, cache, lambda[i])
+                else
+                    totll += ll_curve_k(ki, Y_mats[i], params[ki].mu_cached)
+                end
             end
             loglik_s[sidx] = totll
             if diagnostics && diag !== nothing
@@ -391,7 +453,8 @@ function wicmad(
     end
 
     (; Z = Z_s, alpha = alpha_s, kern = kern_s, params = params, v = v, pi = Utils.stick_to_pi(v),
-        revealed_idx = revealed_idx, K_occ = K_s, loglik = loglik_s, diagnostics = diag)
+        revealed_idx = revealed_idx, K_occ = K_s, loglik = loglik_s, diagnostics = diag,
+        process = proc_cfg)
 end
 
 # =============================================================================
@@ -481,8 +544,21 @@ function _wicmad_bootstrap_one_run(
     I_bu = unique(I_b)
     OOB = setdiff(1:N, I_bu)
     
+    # Subset z_init to in-bag if provided
+    z_init_kw = get(kwargs, :z_init, nothing)
+    local kwargs2
+    if z_init_kw === nothing
+        kwargs2 = NamedTuple(kwargs)
+    else
+        z_init_inbag = Vector{Int}(undef, length(I_bu))
+        for (j, ii) in enumerate(I_bu)
+            z_init_inbag[j] = z_init_kw[ii]
+        end
+        kwargs2 = merge(NamedTuple(kwargs), (z_init = z_init_inbag,))
+    end
+
     # Fit DP model on in-bag only
-    fit = wicmad(Y[I_bu], t; rng=rng, bootstrap_runs=0, parallel=parallel, kwargs...)
+    fit = wicmad(Y[I_bu], t; rng=rng, bootstrap_runs=0, parallel=parallel, kwargs2...)
     
     # Get MAP partition and parameters
     # For now, use the last MCMC sample as MAP approximation

@@ -1,0 +1,202 @@
+#!/usr/bin/env julia
+
+using Pkg
+Pkg.activate(@__DIR__)
+Pkg.develop(path=dirname(@__DIR__))
+
+using WICMAD
+using WICMAD.Utils: LoadedDataset, load_ucr_dataset, prepare_anomaly_dataset, summarize_dataset
+using WICMAD.PostProcessing: dahl_from_res, map_from_res
+using WICMAD.Plotting: plot_clustering_summary
+using Random
+using StatsBase: sample, countmap
+using Printf
+using Interpolations
+
+Random.seed!(42)
+
+data_root = joinpath(dirname(@__DIR__), "data", "japanese+vowels")
+train_path = joinpath(data_root, "ae.train")
+test_path  = joinpath(data_root, "ae.test")
+
+function read_blocks(path::AbstractString)
+    blocks = Vector{Matrix{Float64}}()
+    current = Vector{Vector{Float64}}()
+    for ln in eachline(path)
+        s = strip(ln)
+        if isempty(s)
+            if !isempty(current)
+                mat = reduce(vcat, (permutedims(v) for v in current))
+                push!(blocks, mat)
+                empty!(current)
+            end
+        else
+            vals = parse.(Float64, split(s))
+            push!(current, vals)
+        end
+    end
+    if !isempty(current)
+        mat = reduce(vcat, (permutedims(v) for v in current))
+        push!(blocks, mat)
+    end
+    return blocks
+end
+
+println("Loading Japanese Vowels blocks...")
+train_blocks = read_blocks(train_path)
+test_blocks  = read_blocks(test_path)
+
+# Label speakers per docs
+# Train: 9 speakers, 30 utterances each
+train_labels = String[]
+for (i, _) in enumerate(train_blocks)
+    spk = div(i - 1, 30) + 1
+    push!(train_labels, string(spk))
+end
+
+# Test: speakers have utterance counts: 31 35 88 44 29 24 40 50 29
+test_counts = [31, 35, 88, 44, 29, 24, 40, 50, 29]
+test_labels = String[]
+for (spk, cnt) in enumerate(test_counts)
+    for _ in 1:cnt
+        push!(test_labels, string(spk))
+    end
+end
+
+@assert length(test_labels) == length(test_blocks)
+
+# Combine
+all_series = vcat(train_blocks, test_blocks)
+all_labels = vcat(train_labels, test_labels)
+
+# Wrap as LoadedDataset for reuse of utilities
+ds = LoadedDataset(all_series, all_labels)
+
+println("Preparing anomaly dataset with 15% anomalies (single anomaly group)...")
+prepped = prepare_anomaly_dataset(ds; anomaly_ratio=0.15, rng=Random.default_rng())
+println("$(summarize_dataset(prepped))")
+
+# Interpolate each sequence to 32 frames
+function interpolate_to_length(series::Vector{Matrix{Float64}}; target_len::Int = 32)
+    out = Vector{Matrix{Float64}}(undef, length(series))
+    for (i, X) in pairs(series)
+        P0, M0 = size(X)
+        x_old = collect(1:P0)
+        x_new = collect(range(1, P0, length=target_len))
+        Xn = Array{Float64}(undef, target_len, M0)
+        for m in 1:M0
+            itp = linear_interpolation(x_old, @view X[:, m])
+            Xn[:, m] = itp.(x_new)
+        end
+        out[i] = Xn
+    end
+    return out, target_len
+end
+
+Y, P = interpolate_to_length(prepped.series; target_len=32)
+M = size(Y[1], 2)
+t = collect(1:P)
+
+# Reveal 15% of the normal group
+normal_idx = findall(==(0), prepped.binary_labels)
+n_reveal = max(1, round(Int, 0.15 * length(normal_idx)))
+revealed_subset = isempty(normal_idx) ? Int[] : sample(normal_idx, min(n_reveal, length(normal_idx)); replace=false)
+revealed_idx = sort(revealed_subset)
+
+println("Samples: $(length(Y)), Length: $(P), Dims: $(M)")
+println("Revealed normal count: $(length(revealed_idx)) (15% target)")
+
+# Run WICMAD
+config = (
+    n_iter=3500,
+    burn=1500,
+    thin=1,
+    warmup_iters=400,
+    alpha_prior=(12.0, 1.0),
+    a_eta=2.5, b_eta=0.08,
+    a_sig=2.5, b_sig=0.02,
+    wf="sym8",
+)
+
+println("Running WICMAD...")
+res = wicmad(Y, t;
+    n_iter=config.n_iter,
+    burn=config.burn,
+    thin=config.thin,
+    warmup_iters=config.warmup_iters,
+    alpha_prior=config.alpha_prior,
+    a_eta=config.a_eta, b_eta=config.b_eta,
+    a_sig=config.a_sig, b_sig=config.b_sig,
+    revealed_idx=revealed_idx,
+    diagnostics=true,
+    wf=config.wf,
+    bootstrap_runs=0,
+)
+
+confusion(truth::Vector{Int}, pred::Vector{Int}) = (
+    tn = sum((truth .== 0) .& (pred .== 0)),
+    fp = sum((truth .== 0) .& (pred .== 1)),
+    fn = sum((truth .== 1) .& (pred .== 0)),
+    tp = sum((truth .== 1) .& (pred .== 1)),
+)
+
+function clusters_to_binary(z::Vector{Int})
+    cc = countmap(z)
+    biggest = argmax(cc)
+    [zi == biggest ? 0 : 1 for zi in z]
+end
+
+function best_f1_from_chain(Z::AbstractMatrix{<:Integer}, truth::Vector{Int})
+    best = (-1.0, zeros(Int, length(truth)))
+    for s in axes(Z, 1)
+        pred = clusters_to_binary(vec(Z[s, :]))
+        tp = sum((truth .== 1) .& (pred .== 1))
+        fp = sum((truth .== 0) .& (pred .== 1))
+        fn = sum((truth .== 1) .& (pred .== 0))
+        prec = tp + fp > 0 ? tp / (tp + fp) : 0.0
+        rec  = tp + fn > 0 ? tp / (tp + fn) : 0.0
+        f1   = (prec + rec) > 0 ? 2 * prec * rec / (prec + rec) : 0.0
+        if f1 > best[1]
+            best = (f1, pred)
+        end
+    end
+    best
+end
+
+y_true = prepped.binary_labels
+
+dahl = dahl_from_res(res)
+pred_dahl = clusters_to_binary(dahl.z_hat)
+c_dahl = confusion(y_true, pred_dahl)
+
+mapr = map_from_res(res)
+pred_map = clusters_to_binary(mapr.z_hat)
+c_map = confusion(y_true, pred_map)
+
+best_f1, pred_f1 = best_f1_from_chain(res.Z, y_true)
+c_f1 = confusion(y_true, pred_f1)
+
+println("\nConfusion Matrices (rows: True, cols: Predicted)")
+println("Dahl:")
+@printf("            Normal  Anomaly\n")
+@printf("True Normal  %6d  %6d\n", c_dahl.tn, c_dahl.fp)
+@printf("True Anomaly %6d  %6d\n", c_dahl.fn, c_dahl.tp)
+
+println("\nMAP:")
+@printf("            Normal  Anomaly\n")
+@printf("True Normal  %6d  %6d\n", c_map.tn, c_map.fp)
+@printf("True Anomaly %6d  %6d\n", c_map.fn, c_map.tp)
+
+println("\nMax F1 over chain (F1=$(round(best_f1, digits=4))):")
+@printf("            Normal  Anomaly\n")
+@printf("True Normal  %6d  %6d\n", c_f1.tn, c_f1.fp)
+@printf("True Anomaly %6d  %6d\n", c_f1.fn, c_f1.tp)
+
+plots_dir = joinpath(dirname(@__DIR__), "plots", "japanese_vowels")
+mkpath(plots_dir)
+_ = plot_clustering_summary(Y, y_true, pred_dahl, t; save_dir=plots_dir)
+
+println("\nSaved plots to: $(plots_dir)")
+println("Done.")
+
+

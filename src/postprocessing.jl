@@ -42,8 +42,17 @@ function map_partition(Z::AbstractMatrix{<:Integer})
     for s in 1:S
         keys[s] = join(canonical_labels(vec(Z[s, :])), "-")
     end
-    tab = counts(keys)
-    key_hat, freq = findmax(tab)
+    # Use countmap instead of counts for non-integer arrays
+    tab = countmap(keys)
+    # Find key with maximum count
+    key_hat = first(keys)  # initialize with first key
+    freq = tab[key_hat]
+    for (k, v) in tab
+        if v > freq
+            key_hat = k
+            freq = v
+        end
+    end
     s_hat = findfirst(==(key_hat), keys)
     z_hat = canonical_labels(vec(Z[s_hat, :]))
     K_hat = length(unique(z_hat))
