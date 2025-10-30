@@ -78,7 +78,7 @@ Y = [X[i, :] for i in 1:size(X,1)]
 t = collect(1:size(X,2))
 
 # Ensure plots directory exists
-plots_dir = joinpath(@__DIR__, "../plots/init_exp")
+plots_dir = joinpath(dirname(@__DIR__), "plots")
 isdir(plots_dir) || mkpath(plots_dir)
 
 # Wavelet selection using 50% of normals as revealed indices (subset)

@@ -1,0 +1,2 @@
+dataset,representation,accuracy,precision,recall,f1
+mv_three_channels,raw,0.875,0.0,0.0,NaN

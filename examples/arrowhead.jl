@@ -204,9 +204,9 @@ println("Number of classes: $(length(unique(true_labels)))")
 println("Class distribution: $(countmap(true_labels))")
 
 # Create plots directory structure
-plots_dir = "plots/arrowhead"
-raw_plots_dir = "plots/arrowhead/raw_analysis"
-multivariate_plots_dir = "plots/arrowhead/multivariate_analysis"
+plots_dir = joinpath(dirname(@__DIR__), "plots")
+raw_plots_dir = plots_dir
+multivariate_plots_dir = plots_dir
 
 for dir in [plots_dir, raw_plots_dir, multivariate_plots_dir]
     if !isdir(dir)

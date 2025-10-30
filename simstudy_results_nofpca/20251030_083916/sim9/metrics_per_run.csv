@@ -1,0 +1,2 @@
+dataset,representation,mc_run,accuracy,precision,recall,f1
+mv_one_channel,raw,1,0.175,0.06060606060606061,0.5,0.10810810810810813

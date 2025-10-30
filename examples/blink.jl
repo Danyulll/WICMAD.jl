@@ -148,7 +148,7 @@ println("\nMax F1 over chain (F1=$(round(best_f1, digits=4))):")
 @printf("True Anomaly %6d  %6d\n", c_f1.fn, c_f1.tp)
 
 # Plots: before and after clustering, stacked per-channel
-plots_dir = joinpath(dirname(@__DIR__), "plots", "blink")
+plots_dir = joinpath(dirname(@__DIR__), "plots")
 mkpath(plots_dir)
 
 save_dir = plots_dir

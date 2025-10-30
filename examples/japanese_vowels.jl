@@ -192,7 +192,7 @@ println("\nMax F1 over chain (F1=$(round(best_f1, digits=4))):")
 @printf("True Normal  %6d  %6d\n", c_f1.tn, c_f1.fp)
 @printf("True Anomaly %6d  %6d\n", c_f1.fn, c_f1.tp)
 
-plots_dir = joinpath(dirname(@__DIR__), "plots", "japanese_vowels")
+plots_dir = joinpath(dirname(@__DIR__), "plots")
 mkpath(plots_dir)
 _ = plot_clustering_summary(Y, y_true, pred_dahl, t; save_dir=plots_dir)
 

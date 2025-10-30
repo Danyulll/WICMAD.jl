@@ -378,7 +378,7 @@ println("Average: $(round(mean(n_clusters_list), digits=2)) ± $(round(std(n_clu
 println("Range: $(minimum(n_clusters_list)) - $(maximum(n_clusters_list))")
 
 # Create plots directory
-plots_dir = "plots/arrowhead_100_runs"
+plots_dir = joinpath(dirname(@__DIR__), "plots")
 if !isdir(plots_dir)
     mkpath(plots_dir)
 end

@@ -4,7 +4,7 @@
 #SBATCH --account=def-dsteph
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=99
+#SBATCH --cpus-per-task=100
 #SBATCH --mem=180G                 # adjust as needed (or use --mem=0 to grab all memory)
 #SBATCH --time=1-00:00:00
 #SBATCH --output=%x-%j.out

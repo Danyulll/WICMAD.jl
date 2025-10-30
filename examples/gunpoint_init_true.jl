@@ -81,7 +81,7 @@ println("Using N=$(size(X,1)) with ~15% anomalies. Counts: ", countmap(y))
 Y = [X[i, :] for i in 1:size(X,1)]
 t = collect(1:size(X,2))
 
-plots_dir = joinpath(@__DIR__, "../plots/init_exp/gunpoint")
+plots_dir = joinpath(dirname(@__DIR__), "plots")
 isdir(plots_dir) || mkpath(plots_dir)
 
 normal_indices = findall(==(normal_class), y)
