@@ -1,2 +1,0 @@
-dataset,representation,accuracy,precision,recall,f1
-mv_two_channels,raw,0.15,0.058823529411764705,0.5,0.10526315789473684

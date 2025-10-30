@@ -34,8 +34,8 @@ const mc_runs      = 1
 const base_seed    = 0x000000000135CFF1 % UInt64
 
 # Sampler controls
-const n_iter       = 3_000
-const burnin       = 1_000
+const n_iter       = 5_000
+const burnin       = 2_000
 const thin         = 1
 const warmup_iters = 500
 
@@ -45,7 +45,8 @@ const reveal_prop  = 0.15
 # Output (bucketed per top-level script name, e.g., sim1, sim2, ...)
 const timestamp    = Dates.format(now(), "yyyymmdd_HHMMSS")
 const sim_name     = splitext(basename(PROGRAM_FILE))[1]
-const out_root     = joinpath("simstudy_results_nofpca", timestamp, sim_name)
+# Save under a folder that reflects the simulation script name
+const out_root     = joinpath("simstudy_results_nofpca", string(sim_name, "_", timestamp))
 const png_dir      = joinpath(out_root, "png")
 const metrics_csv  = joinpath(out_root, "summary_metrics.csv")
 const perrun_csv   = joinpath(out_root, "metrics_per_run.csv")
