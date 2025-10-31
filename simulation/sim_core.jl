@@ -192,22 +192,31 @@ function make_multivariate_dataset(; N::Int=300, regime::Symbol=:one,
         else  row end
     end
 
+    # Track which channels have anomalies for each observation
+    channel_anomalies = zeros(Bool, N, 3)  # N observations, 3 channels
+    
     for i in idx_anom
         Xi = copy(Y[i])
         if regime == :one
-            ch   = rand(1:3)
+            ch   = 1  # Always use channel 1 for sim9 (one channel regime)
             type = rand(types)
             Xi[:, ch] = apply_perturb(@view(Xi[:, ch]), type)
+            channel_anomalies[i, ch] = true  # Mark this channel as anomalous
         elseif regime == :two
-            chs  = sort(randperm(3)[1:2])
+            chs  = [1, 2]  # Always use channels 1 and 2 for sim10 (two channel regime)
             type = rand(types)
             for ch in chs
                 Xi[:, ch] = apply_perturb(@view(Xi[:, ch]), type)
+                channel_anomalies[i, ch] = true  # Mark these channels as anomalous
             end
         elseif regime == :three
-            for ch in 1:3
-                type = rand(types)
+            # Ensure each channel gets a different anomaly type
+            types_vec = collect(types)  # Convert tuple to vector: [:isolated, :mag1, :mag2, :shape]
+            shuffled_types = Random.shuffle(types_vec)  # Randomly shuffle the 4 types
+            for (ch_idx, ch) in enumerate(1:3)
+                type = shuffled_types[ch_idx]  # Assign different type to each channel
                 Xi[:, ch] = apply_perturb(@view(Xi[:, ch]), type)
+                channel_anomalies[i, ch] = true  # Mark all channels as anomalous
             end
         else
             error("Unknown regime: $regime")
@@ -215,7 +224,23 @@ function make_multivariate_dataset(; N::Int=300, regime::Symbol=:one,
         Y[i] = Xi
     end
 
-    return (; Y_list=Y, t, y_true)
+    return (; Y_list=Y, t, y_true, channel_anomalies=channel_anomalies)
+end
+
+# -----------------------------
+# Channel anomalies expansion for derivatives
+# -----------------------------
+function expand_channel_anomalies_for_derivatives(ca::AbstractMatrix{Bool}, Y_list)
+    Mplot = size(Y_list[1], 2)
+    Mraw  = size(ca, 2)
+    # If derivatives triple the channels, tile flags across each triplet
+    if Mplot % Mraw == 0
+        reps = Mplot ÷ Mraw
+        return reduce(hcat, (repeat(ca[:, j:j], 1, reps) for j in 1:Mraw))
+    else
+        @warn "Cannot expand channel anomalies: Mplot=$(Mplot) not a multiple of Mraw=$(Mraw)"
+        return nothing
+    end
 end
 
 # -----------------------------
@@ -262,17 +287,32 @@ end
 # -----------------------------
 # Plot helpers
 # -----------------------------
-function plot_before!(Y_list, t, y_true; title::AbstractString, path::AbstractString)
+function plot_before!(Y_list, t, y_true; title::AbstractString, path::AbstractString, 
+                       channel_anomalies::Union{Nothing,Matrix{Bool}}=nothing)
     P = length(t)
     M = size(Y_list[1], 2)
     plt = plot(layout=(M,1), size=(800, 200*M), legend=:topright, title=title)
+    
+    # Check if we have channel_anomalies and it matches dimensions exactly
+    use_channel_specific = !isnothing(channel_anomalies) && 
+                           size(channel_anomalies, 1) == length(Y_list) && 
+                           size(channel_anomalies, 2) == M
+    
     for m in 1:M
         # plot each series individually to avoid group-recipe issues
         for (i, Xi) in enumerate(Y_list)
-            if y_true[i] == 0
-                plot!(plt[m], t, @view(Xi[:, m]); color=:blue, alpha=0.6, label="")
+            # If channel_anomalies is provided and valid (multivariate), use per-channel coloring
+            # Otherwise, use observation-level coloring (univariate)
+            is_anomaly = if use_channel_specific
+                channel_anomalies[i, m]  # This specific channel has anomaly
             else
+                y_true[i] == 1  # Entire observation is anomalous
+            end
+            
+            if is_anomaly
                 plot!(plt[m], t, @view(Xi[:, m]); color=:red,  alpha=0.6, label="")
+            else
+                plot!(plt[m], t, @view(Xi[:, m]); color=:blue, alpha=0.6, label="")
             end
         end
         plot!(plt[m]; title="Channel $m")
@@ -283,17 +323,32 @@ function plot_before!(Y_list, t, y_true; title::AbstractString, path::AbstractSt
     savefig(plt, path)
 end
 
-function plot_after!(Y_list, t, pred_anom; title::AbstractString, path::AbstractString)
+function plot_after!(Y_list, t, pred_anom; title::AbstractString, path::AbstractString,
+                      channel_anomalies::Union{Nothing,Matrix{Bool}}=nothing)
     P = length(t)
     M = size(Y_list[1], 2)
     plt = plot(layout=(M,1), size=(800, 200*M), legend=:topright, title=title)
+    
+    # Check if we have channel_anomalies and it matches dimensions exactly
+    use_channel_specific = !isnothing(channel_anomalies) && 
+                           size(channel_anomalies, 1) == length(Y_list) && 
+                           size(channel_anomalies, 2) == M
+    
     for m in 1:M
         # plot each series individually to avoid group-recipe issues
         for (i, Xi) in enumerate(Y_list)
-            if pred_anom[i] == 0
-                plot!(plt[m], t, @view(Xi[:, m]); color=:blue, alpha=0.6, label="")
+            # For "after" plots, use channel_anomalies to show which channels were actually anomalous
+            # (we want to see the ground truth channel-specific anomalies, not predictions)
+            is_anomaly = if use_channel_specific
+                channel_anomalies[i, m]  # Use channel_anomalies to show ground truth
             else
+                pred_anom[i] == 1  # Fall back to observation-level prediction
+            end
+            
+            if is_anomaly
                 plot!(plt[m], t, @view(Xi[:, m]); color=:red,  alpha=0.6, label="")
+            else
+                plot!(plt[m], t, @view(Xi[:, m]); color=:blue, alpha=0.6, label="")
             end
         end
         plot!(plt[m]; title="Channel $m")
@@ -364,6 +419,19 @@ function run_one(dataset_label::AbstractString, dataset_title::AbstractString,
     t      = dat.t
     y_true = dat.y_true
     N      = length(Y_raw)
+    # Extract channel_anomalies if it exists (for multivariate datasets)
+    channel_anomalies = try
+        ca = dat.channel_anomalies
+        Mraw = size(Y_raw[1], 2)  # number of channels in the raw representation
+        if size(ca, 1) == N && size(ca, 2) == Mraw
+            ca  # Valid channel_anomalies matrix
+        else
+            @warn "channel_anomalies has wrong dimensions $(size(ca)); expected (N=$(N), Mraw=$(Mraw)). Using observation-level coloring."
+            nothing
+        end
+    catch
+        nothing  # Field doesn't exist (univariate dataset)
+    end
 
     Y_list = if representation == :raw
         Y_raw
@@ -371,6 +439,14 @@ function run_one(dataset_label::AbstractString, dataset_title::AbstractString,
         derivatives_transform(Y_raw, t)
     else
         error("Unknown representation: $representation")
+    end
+
+    # Expand channel_anomalies if needed for derivatives representation
+    if !isnothing(channel_anomalies)
+        Mplot = size(Y_list[1], 2)
+        if size(channel_anomalies, 2) != Mplot
+            channel_anomalies = expand_channel_anomalies_for_derivatives(channel_anomalies, Y_list)
+        end
     end
 
     for i in 1:length(Y_list)
@@ -424,10 +500,25 @@ function run_one(dataset_label::AbstractString, dataset_title::AbstractString,
 
     if mc_idx == 1
         tag = string(dataset_label, "_", Symbol(representation))
+        # Debug: check if channel_anomalies is available for multivariate datasets
+        if startswith(dataset_label, "mv_")
+            if isnothing(channel_anomalies)
+                @warn "channel_anomalies is nothing for multivariate dataset $dataset_label - plots will show all channels"
+            else
+                # Count how many channels have anomalies per observation
+                n_anom_obs = sum(y_true .== 1)
+                if n_anom_obs > 0
+                    channel_counts = sum(channel_anomalies[y_true .== 1, :], dims=1)
+                    @info "Multivariate dataset $dataset_label: anomaly channels per observation - Channel 1: $(channel_counts[1]), Channel 2: $(channel_counts[2]), Channel 3: $(channel_counts[3])"
+                end
+            end
+        end
         plot_before!(Y_list, t, y_true; title=dataset_title,
-                     path=joinpath(png_dir, string(tag, "_before.png")))
+                     path=joinpath(png_dir, string(tag, "_before.png")),
+                     channel_anomalies=channel_anomalies)
         plot_after!(Y_list, t, pred_anom; title=dataset_title,
-                    path=joinpath(png_dir, string(tag, "_after.png")))
+                    path=joinpath(png_dir, string(tag, "_after.png")),
+                    channel_anomalies=channel_anomalies)
     end
 
     met = metrics_from_preds(y_true, pred_anom)

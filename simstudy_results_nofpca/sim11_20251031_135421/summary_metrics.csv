@@ -1,0 +1,2 @@
+dataset,representation,accuracy,precision,recall,f1,mean_map_tn,mean_map_fp,mean_map_fn,mean_map_tp
+mv_three_channels,raw,0.16666666666666666,0.06751054852320675,0.35555555555555557,0.11347517730496454,104.0,151.0,30.0,15.0
