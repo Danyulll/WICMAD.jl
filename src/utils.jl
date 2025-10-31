@@ -631,9 +631,22 @@ end
 
 mutable struct WaveletParams
     lev_names::Vector{String}
-    pi_level::Dict{String,Float64}
-    g_level::Dict{String,Float64}
-    gamma_ch::Vector{Vector{Int}}
+    pi_level::Dict{String,Float64}     # to be SAMPLED (current value per detail level)
+    g_level::Dict{String,Float64}      # to be SAMPLED (current value per detail level)
+    gamma_ch::Vector{Vector{Int}}      # per-channel indicators (0/1) for every coefficient
+
+    # NEW hyperparameters (per cluster, match write-up)
+    kappa_pi::Float64                  # κ_π
+    c2::Float64                        # c_2
+    tau_pi::Float64                    # τ_π
+
+    a_g::Float64                       # IG prior on g: shape
+    b_g::Float64                       # IG prior on g: rate
+
+    a_sig::Float64                     # IG prior on σ²: shape
+    b_sig::Float64                     # IG prior on σ²: rate multiplier (used as b_sig * tau_sigma)
+    a_tau::Float64                     # Gamma prior on τ_σ: shape
+    b_tau::Float64                     # Gamma prior on τ_σ: rate
 end
 
 mutable struct ClusterParams
@@ -662,6 +675,17 @@ function draw_empty_acc(M::Int, kernels::Vector{KernelConfig})
     AcceptanceTracker(kernel_counts, AcceptCount(), [AcceptCount() for _ in 1:M], AcceptCount())
 end
 
+function force_scaling_active!(wpar::WaveletParams, maps_per_channel::Vector)
+    for m in 1:length(maps_per_channel)
+        map_m = maps_per_channel[m]
+        for (sym, ur) in map_m.idx
+            if startswith(String(sym), "s")
+                wpar.gamma_ch[m][ur] .= 1
+            end
+        end
+    end
+end
+
 function draw_new_cluster_params(M::Int, P::Int, t, kernels::Vector{KernelConfig}; wf::String = "sym8", J = nothing, boundary::String = "periodic")
     Jv = ensure_dyadic_J(P, J)
     zeros_mat = zeros(P, M)
@@ -669,12 +693,38 @@ function draw_new_cluster_params(M::Int, P::Int, t, kernels::Vector{KernelConfig
     lev_names = [String(k) for k in keys(tmp[1].map.idx)]
     det_names = filter(name -> startswith(name, "d"), lev_names)
     ncoeff = length(tmp[1].coeff)
-    beta_ch = [zeros(ncoeff) for _ in 1:M]
-    pi_level = Dict(name => 0.5 for name in det_names)
-    g_level = Dict(name => 2.0 for name in det_names)
-    gamma_ch = [collect(Base.rand(Binomial(1, 0.2), ncoeff)) for _ in 1:M]
+
+    # Prior hyperparameters: match thesis defaults (use 2's; tau_pi moderately informative)
+    kappa_pi = 1.0
+    c2       = 1.0
+    tau_pi   = 40.0
+    a_g, b_g = 2.0, 2.0
+    a_sig, b_sig = 2.0, 2.0
+    a_tau, b_tau = 2.0, 2.0
+
+    # Initialize per-level π and g at reasonable prior locations
+    pi_level = Dict{String,Float64}()
+    g_level  = Dict{String,Float64}()
+    for name in det_names
+        j = parse(Int, replace(name, "d"=>""))
+        m_j = kappa_pi * 2.0^(-c2 * j)
+        pi_level[name] = clamp(m_j, 1e-6, 1 - 1e-6)
+        # IG mode for g when a_g > 1: mode = rate / (shape + 1) in variance-IG; here we store expectation of g as positive value.
+        # We will sample g later; any positive seed is fine.
+        g0 = 1.0
+        g_level[name] = g0
+    end
+
+    beta_ch  = [zeros(ncoeff) for _ in 1:M]
+    gamma_ch = [zeros(Int, ncoeff) for _ in 1:M]
+
+    wpar = WaveletParams(
+        lev_names, pi_level, g_level, gamma_ch,
+        kappa_pi, c2, tau_pi,
+        a_g, b_g,
+        a_sig, b_sig, a_tau, b_tau
+    )
     thetas = [kc.pstar() for kc in kernels]
-    wpar = WaveletParams(lev_names, pi_level, g_level, gamma_ch)
     ClusterParams(
         wpar,
         Base.rand(1:length(kernels)),

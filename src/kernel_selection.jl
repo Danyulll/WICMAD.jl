@@ -46,7 +46,21 @@ function wavelet_smooth_mean_function(Y_mats::Vector{Matrix{Float64}}, revealed_
     ncoeff = length(test_wt.coeff)
     gamma_ch = [Int.(Base.rand(Bernoulli(0.2), ncoeff)) for _ in 1:M]
     
-    wpar = Utils.WaveletParams(lev_names, pi_level, g_level, gamma_ch)
+    # Hyperparameters for WaveletParams (matching those used in update_cluster_wavelet_params_besov)
+    kappa_pi = 1.0
+    c2 = 1.0
+    tau_pi = 40.0
+    a_g = 2.0
+    b_g = 2.0
+    a_sig = 2.5
+    b_sig = 0.02
+    a_tau = 2.0
+    b_tau = 2.0
+    
+    wpar = Utils.WaveletParams(lev_names, pi_level, g_level, gamma_ch,
+                               kappa_pi, c2, tau_pi,
+                               a_g, b_g,
+                               a_sig, b_sig, a_tau, b_tau)
     
     # Initialize sigma2 and tau_sigma
     sigma2_m = [1.0 for _ in 1:M]
@@ -66,7 +80,7 @@ function wavelet_smooth_mean_function(Y_mats::Vector{Matrix{Float64}}, revealed_
         # Update wavelet parameters using Besov spike-and-slab MCMC on the cluster mean
         upd = WaveletOps.update_cluster_wavelet_params_besov(
             [1], precomp, M, wpar, sigma2_m, tau_sigma;
-            kappa_pi = 0.6, c2 = 1.0, tau_pi = 40.0,
+            kappa_pi = 1.0, c2 = 1.0, tau_pi = 40.0,
             g_hyp = nothing,
             a_sig = 2.5, b_sig = 0.02,
             a_tau = 2.0, b_tau = 2.0

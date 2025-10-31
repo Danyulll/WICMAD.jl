@@ -141,7 +141,7 @@ end
 function make_univariate_dataset(N=40, anomaly_type="isolated", t=t_grid)
     X = gp_draw_matrix(N, t, mean_fun, k_qp, sigma_noise)  # N x P
     y_true = zeros(Int, N)
-    n_anom = max(1, round(Int, 0.10 * N))   # 10%
+    n_anom = max(1, round(Int, 0.20 * N))   # 20%
     idx_anom = randperm(N)[1:n_anom]
 
     X_pert = copy(X)
@@ -183,7 +183,7 @@ function make_multivariate_dataset(N=40, regime="one", t=t_grid)
     end
 
     y_true = zeros(Int, N)
-    n_anom = max(1, round(Int, 0.10 * N))
+    n_anom = max(1, round(Int, 0.20 * N))
     idx_anom = randperm(N)[1:n_anom]
     y_true[idx_anom] .= 1
 
@@ -328,7 +328,8 @@ function run_one(dataset_label, dataset_title, representation, make_data_fn, mc_
                thin          = thin,
                warmup_iters  = warmup_iters,
                revealed_idx  = reveal_idx,
-               diagnostics   = true)
+               diagnostics   = true,
+               bootstrap_runs = 0)
     catch e
         @warn "WICMAD error for $dataset_label: $e"
         (Z = ones(Int, 1, N), K_occ=[1], loglik=[0.0], alpha=[1.0], kern=[1],

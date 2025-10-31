@@ -1,0 +1,2 @@
+dataset,representation,mc_run,accuracy,precision,recall,f1
+uni_mag2_deriv,derivatives,1,0.9933333333333333,0.9574468085106383,1.0,0.9782608695652174

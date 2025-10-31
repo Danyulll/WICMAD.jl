@@ -1,0 +1,2 @@
+dataset,representation,accuracy,precision,recall,f1
+uni_mag1_raw,raw,1.0,1.0,1.0,1.0

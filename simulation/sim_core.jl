@@ -132,11 +132,11 @@ end
 # -----------------------------
 # Dataset generators
 # -----------------------------
-function make_univariate_dataset(; N::Int=40, anomaly_type::Symbol=:isolated,
+function make_univariate_dataset(; N::Int=300, anomaly_type::Symbol=:isolated,
                                  t::AbstractVector=t_grid)
     X      = gp_draw_matrix(N, t, mean_fun, k_qp, σ_noise)
     y_true = zeros(Int, N)
-    n_anom = max(1, round(Int, 0.10N))
+    n_anom = max(1, round(Int, 0.15N))
     idx_anom = randperm(N)[1:n_anom]
 
     Xpert = copy(X)
@@ -160,7 +160,7 @@ function make_univariate_dataset(; N::Int=40, anomaly_type::Symbol=:isolated,
     return (; Y_list, t, y_true)
 end
 
-function make_multivariate_dataset(; N::Int=40, regime::Symbol=:one,
+function make_multivariate_dataset(; N::Int=300, regime::Symbol=:one,
                                    t::AbstractVector=t_grid)
     P = length(t)
     U1 = gp_draw_matrix(N, t, mean_fun, k_qp, 0.0)
@@ -178,7 +178,7 @@ function make_multivariate_dataset(; N::Int=40, regime::Symbol=:one,
     end
 
     y_true   = zeros(Int, N)
-    n_anom   = max(1, round(Int, 0.10N))
+    n_anom   = max(1, round(Int, 0.15N))
     idx_anom = randperm(N)[1:n_anom]
     y_true[idx_anom] .= 1
 
@@ -321,6 +321,39 @@ function metrics_from_preds(y_true::Vector{Int}, pred_anom::Vector{Int})
 end
 
 # -----------------------------
+# Confusion matrix helpers
+# -----------------------------
+function confusion_matrix(truth::Vector{Int}, pred::Vector{Int})
+    (
+        tn = sum((truth .== 0) .& (pred .== 0)),
+        fp = sum((truth .== 0) .& (pred .== 1)),
+        fn = sum((truth .== 1) .& (pred .== 0)),
+        tp = sum((truth .== 1) .& (pred .== 1)),
+    )
+end
+
+function clusters_to_binary(z::Vector{Int}, revealed_idx::Vector{Int})
+    # Find normal label from revealed indices
+    if !isempty(revealed_idx)
+        labs = z[revealed_idx]
+        counts = countmap(labs)
+        normal_label = argmax(counts)
+    else
+        # If no revealed indices, use largest cluster
+        counts = countmap(z)
+        normal_label = argmax(counts)
+    end
+    [zi == normal_label ? 0 : 1 for zi in z]
+end
+
+function print_confusion_matrix(label::AbstractString, c::NamedTuple, dataset_label::AbstractString)
+    println("\n[$dataset_label] Confusion Matrix - $label:")
+    println("            Normal  Anomaly")
+    @printf("True Normal  %6d  %6d\n", c.tn, c.fp)
+    @printf("True Anomaly %6d  %6d\n", c.fn, c.tp)
+end
+
+# -----------------------------
 # One dataset for one MC seed
 # -----------------------------
 function run_one(dataset_label::AbstractString, dataset_title::AbstractString,
@@ -366,20 +399,28 @@ function run_one(dataset_label::AbstractString, dataset_title::AbstractString,
         res = (; Z=Zs, K_occ=fill(1, size(Zs,1)), loglik=zeros(size(Zs,1)))
     end
 
-    dahl   = WICMAD.dahl_from_res(res)
-    z_hat  = dahl.z_hat
-    normal_label = let
-        labs = z_hat[reveal_idx]
-        if isempty(labs)
-            labs_all = z_hat
-            counts = countmap(labs_all)
-            argmax(counts)
-        else
-            counts = countmap(labs)
-            argmax(counts)
-        end
+    # Compute Dahl estimate
+    dahl = WICMAD.dahl_from_res(res)
+    pred_dahl = clusters_to_binary(dahl.z_hat, reveal_idx)
+    c_dahl = confusion_matrix(y_true, pred_dahl)
+    
+    # Compute MAP estimate
+    mapr = WICMAD.map_from_res(res)
+    pred_map = clusters_to_binary(mapr.z_hat, reveal_idx)
+    c_map = confusion_matrix(y_true, pred_map)
+    
+    # Print confusion matrices (only for first MC run to avoid clutter)
+    if mc_idx == 1
+        println("\n" * "="^60)
+        println("Confusion Matrices for $dataset_label ($representation)")
+        println("="^60)
+        print_confusion_matrix("Dahl Estimate", c_dahl, dataset_label)
+        print_confusion_matrix("MAP Estimate", c_map, dataset_label)
+        println("="^60)
     end
-    pred_anom = map(l -> l == normal_label ? 0 : 1, z_hat)
+    
+    # Use Dahl estimate for metrics (existing behavior)
+    pred_anom = pred_dahl
 
     if mc_idx == 1
         tag = string(dataset_label, "_", Symbol(representation))
@@ -396,7 +437,11 @@ function run_one(dataset_label::AbstractString, dataset_title::AbstractString,
             accuracy=met.accuracy,
             precision=met.precision,
             recall=met.recall,
-            f1=met.f1)
+            f1=met.f1,
+            map_tn=c_map.tn,
+            map_fp=c_map.fp,
+            map_fn=c_map.fn,
+            map_tp=c_map.tp)
 end
 
 # -----------------------------
@@ -450,7 +495,11 @@ function run_datasets(filter_ids::Union{Nothing,Vector{String}}=nothing)
         (; accuracy=mean(skipmissing(sdf.accuracy)),
            precision=mean(skipmissing(sdf.precision)),
            recall=mean(skipmissing(sdf.recall)),
-           f1=mean(skipmissing(sdf.f1)))
+           f1=mean(skipmissing(sdf.f1)),
+           mean_map_tn=mean(skipmissing(sdf.map_tn)),
+           mean_map_fp=mean(skipmissing(sdf.map_fp)),
+           mean_map_fn=mean(skipmissing(sdf.map_fn)),
+           mean_map_tp=mean(skipmissing(sdf.map_tp)))
     end
     CSV.write(metrics_csv, summary_df)
     @info "Saved summary metrics CSV to: $(abspath(metrics_csv))"

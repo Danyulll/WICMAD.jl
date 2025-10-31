@@ -9,7 +9,7 @@ using StatsFuns: logistic
 
 export WaveletMap, WaveletCoefficients, wt_forward_1d, wt_inverse_1d, wt_forward_mat,
        precompute_wavelets, stack_D_from_precomp, compute_mu_from_beta,
-       update_cluster_wavelet_params_besov
+       update_cluster_wavelet_params_besov, update_cluster_wavelet_params_besov_fullbayes
 
 # =============================================================================
 # WAVELET STRUCTURES AND BASIC OPERATIONS
@@ -205,7 +205,7 @@ end
 
 function update_cluster_wavelet_params_besov(idx::Vector{Int}, precomp, M::Int, wpar::Utils.WaveletParams,
     sigma2_m::Vector{Float64}, tau_sigma::Float64;
-    kappa_pi::Float64 = 0.6, c2::Float64 = 1.0, tau_pi::Float64 = 40.0,
+    kappa_pi::Float64 = 1.0, c2::Float64 = 1.0, tau_pi::Float64 = 40.0,
     g_hyp = nothing,
     a_sig::Float64 = 2.5, b_sig::Float64 = 0.02,
     a_tau::Float64 = 2.0, b_tau::Float64 = 2.0)
@@ -355,6 +355,158 @@ function update_cluster_wavelet_params_besov(idx::Vector{Int}, precomp, M::Int, 
     tau_sigma_new = Base.rand(Gamma(a_post, 1 / b_post))
 
     (wpar = wpar, beta_ch = beta_ch, sigma2_m = sigma2_m_new, tau_sigma = tau_sigma_new, maps = maps)
+end
+
+function update_cluster_wavelet_params_besov_fullbayes(
+    idx::Vector{Int}, precomp, M::Int, wpar::Utils.WaveletParams,
+    sigma2_m::Vector{Float64}, tau_sigma::Float64
+)
+    if isempty(idx)
+        return (wpar=wpar,
+                beta_ch=[Float64[] for _ in 1:M],
+                sigma2_m=sigma2_m,
+                tau_sigma=tau_sigma,
+                maps=nothing)
+    end
+
+    # Stack coefficients and get per-channel maps
+    stk   = stack_D_from_precomp(precomp, idx, M)
+    D     = stk.D_arr                   # ncoeff × N_k × M
+    maps  = stk.maps
+    ncoeff, N_k, _ = size(D)
+
+    # Ensure gamma sized; force scaling block(s) active
+    ensure_gamma_length!(wpar, ncoeff, M)
+    Utils.force_scaling_active!(wpar, maps)
+
+    det_names = filter(name -> startswith(name, "d"), wpar.lev_names)
+    s_names   = filter(name -> startswith(name, "s"), wpar.lev_names)  # expect ["sJ"] usually
+
+    #### 1) Update gamma (detail only) via posterior odds from write-up
+    for m in 1:M
+        Dm = view(D, :, :, m)              # ncoeff × N_k
+        gam = wpar.gamma_ch[m]
+        σ2  = sigma2_m[m]
+
+        for lev in det_names
+            ids = maps[m].idx[Symbol(lev)]
+            isempty(ids) && continue
+            π  = wpar.pi_level[lev]
+            g  = wpar.g_level[lev]
+
+            # S2 per coefficient at this level
+            S2 = vec(sum(Dm[ids, :].^2; dims=2))
+
+            # log-odds = log(π/(1-π)) - 0.5*N_k*log(1+g) + 0.5/σ²*(1 - 1/(1+g))*S2
+            c1 = log(π) - log1p(-π) - 0.5 * N_k * log1p(g)
+            c2 = 0.5/σ2 * (1.0 - 1.0/(1.0 + g))
+            logit = c1 .+ c2 .* S2
+
+            p1 = 1.0 ./ (1.0 .+ exp.(-clamp.(logit, -35, 35)))
+            gam[ids] = Int.(Base.rand.(Bernoulli.(p1)))
+        end
+    end
+    # scaling blocks already forced active
+
+    #### 2) Update beta: if gamma=0 -> exact 0; if gamma=1 -> Normal(μ*, v*)
+    beta_ch = [zeros(ncoeff) for _ in 1:M]
+    for m in 1:M
+        Dm = view(D, :, :, m)
+        σ2 = sigma2_m[m]
+        gam = wpar.gamma_ch[m]
+
+        # detail
+        for lev in det_names
+            ids = maps[m].idx[Symbol(lev)]
+            isempty(ids) && continue
+            g = wpar.g_level[lev]
+
+            ybar  = vec(mean(Dm[ids, :]; dims=2))
+            vstar = σ2 / (N_k + 1.0/g)
+            μstar = (N_k / (N_k + 1.0/g)) .* ybar
+
+            on  = (gam[ids] .== 1)
+            off = .!on
+            if any(on)
+                beta_ch[m][ids[on]] = Base.rand.(Normal.(μstar[on], sqrt(vstar)))
+            end
+            if any(off)
+                beta_ch[m][ids[off]] .= 0.0
+            end
+        end
+
+        # scaling: always active; Normal around ybar with variance σ²/N_k
+        for sname in s_names
+            ids_s = maps[m].idx[Symbol(sname)]
+            isempty(ids_s) && continue
+            ybar_s = vec(mean(Dm[ids_s, :]; dims=2))
+            v_s    = σ2 / N_k
+            beta_ch[m][ids_s] = Base.rand.(Normal.(ybar_s, sqrt(v_s)))
+            wpar.gamma_ch[m][ids_s] .= 1
+        end
+    end
+
+    #### 3) Update g_j (detail) ~ InvGamma(a_g + 0.5*#active, b_g + 0.5*Σ_active S2 / σ²)
+    for lev in det_names
+        a_g, b_g = wpar.a_g, wpar.b_g
+        n_on = 0
+        sum_term = 0.0
+        for m in 1:M
+            σ2 = sigma2_m[m]
+            Dm = view(D, :, :, m)
+            ids = maps[m].idx[Symbol(lev)]
+            isempty(ids) && continue
+            on_mask = (wpar.gamma_ch[m][ids] .== 1)
+            if any(on_mask)
+                Dsub = Dm[ids[on_mask], :]  # (#on) × N_k
+                n_on += sum(on_mask)
+                sum_term += sum(Dsub.^2) / σ2
+            end
+        end
+        if n_on > 0
+            shape = a_g + 0.5 * n_on
+            rate  = b_g + 0.5 * sum_term
+            # sample IG via 1 / Gamma(shape, 1/rate)
+            wpar.g_level[lev] = 1.0 / Base.rand(Gamma(shape, 1.0/rate))
+        else
+            # keep positive, mildly shrink
+            wpar.g_level[lev] = max(wpar.g_level[lev], 1e-6)
+        end
+    end
+
+    #### 4) Update π_j (detail) ~ Beta( τπ m_j + n1, τπ(1-m_j) + n0 ), m_j=κπ*2^{-c2 j}
+    for lev in det_names
+        j = parse(Int, replace(lev, "d"=>""))
+        m_j = wpar.kappa_pi * 2.0^(-wpar.c2 * j)
+        n1, n0 = 0, 0
+        for m in 1:M
+            ids = maps[m].idx[Symbol(lev)]
+            isempty(ids) && continue
+            gvec = wpar.gamma_ch[m][ids]
+            n1 += sum(gvec)
+            n0 += length(gvec) - sum(gvec)
+        end
+        α = wpar.tau_pi * m_j + n1
+        β = wpar.tau_pi * (1.0 - m_j) + n0
+        wpar.pi_level[lev] = Base.rand(Beta(α, β))
+    end
+
+    #### 5) Update σ²_{k,m} and τ_σ
+    sigma2_m_new = similar(sigma2_m)
+    N_eff = N_k * ncoeff
+    for m in 1:M
+        Dm = view(D, :, :, m)
+        resid = Dm .- beta_ch[m]
+        ss_m = sum(resid.^2)
+        a_post = wpar.a_sig + 0.5 * N_eff
+        b_post = wpar.b_sig * tau_sigma + 0.5 * ss_m
+        sigma2_m_new[m] = 1.0 / Base.rand(Gamma(a_post, 1.0 / b_post)) # IG
+    end
+    aτ = wpar.a_tau + M * wpar.a_sig
+    bτ = wpar.b_tau + wpar.b_sig * sum(1.0 ./ sigma2_m_new)
+    tau_sigma_new = Base.rand(Gamma(aτ, 1.0 / bτ))
+
+    return (wpar=wpar, beta_ch=beta_ch, sigma2_m=sigma2_m_new, tau_sigma=tau_sigma_new, maps=maps)
 end
 
 end # module

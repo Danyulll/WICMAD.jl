@@ -34,7 +34,8 @@ using .TProcess
 # Main exports
 export wicmad, adj_rand_index, choose2, init_diagnostics,
        plot_cluster_means_diagnostic, plot_kernel_switches_diagnostic, plot_wicmad_diagnostics,
-       interactive_kernel_selection, wicmad_bootstrap_driver
+       interactive_kernel_selection, wicmad_bootstrap_driver,
+       dahl_from_res, map_from_res, dahl_partition, map_partition
 
 # Utility functions
 choose2(n::Int) = n < 2 ? 0.0 : n * (n - 1) / 2
@@ -116,7 +117,7 @@ function wicmad(
     K_init::Int = 5,
     warmup_iters::Int = 100,
     unpin::Bool = false,
-    kappa_pi::Float64 = 0.6,
+    kappa_pi::Float64 = 1.0,
     c2::Float64 = 1.0,
     tau_pi::Float64 = 40.0,
     a_sig::Float64 = 2.5,
@@ -355,14 +356,15 @@ function wicmad(
         for k in 1:K
             idx = findall(==(k), z)
             isempty(idx) && continue
-            upd = update_cluster_wavelet_params_besov(idx, precomp_all, M, params[k].wpar,
-                params[k].sigma2, params[k].tau_sigma; kappa_pi = kappa_pi, c2 = c2, tau_pi = tau_pi,
-                g_hyp = params[k].g_hyp, a_sig = a_sig, b_sig = b_sig, a_tau = a_tau, b_tau = b_tau)
-            params[k].wpar = upd.wpar
-            params[k].beta_ch = upd.beta_ch
-            params[k].sigma2 = upd.sigma2_m
+            upd = WaveletOps.update_cluster_wavelet_params_besov_fullbayes(
+                idx, precomp_all, M, params[k].wpar, params[k].sigma2, params[k].tau_sigma
+            )
+            params[k].wpar      = upd.wpar
+            params[k].beta_ch   = upd.beta_ch
+            params[k].sigma2    = upd.sigma2_m
             params[k].tau_sigma = upd.tau_sigma
-            mu_k = compute_mu_from_beta(params[k].beta_ch, wf, Jv, boundary, P)
+
+            mu_k = WaveletOps.compute_mu_from_beta(params[k].beta_ch, wf, Jv, boundary, P)
             params[k].mu_cached = mu_k
             params[k].mu_cached_iter = iter
             Yk = [Y_mats[ii] for ii in idx]

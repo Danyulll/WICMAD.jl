@@ -1,0 +1,2 @@
+dataset,representation,accuracy,precision,recall,f1,mean_map_tn,mean_map_fp,mean_map_fn,mean_map_tp
+uni_isolated_raw,raw,0.2783333333333333,0.1432806324110672,0.7777777777777778,0.24191580231848686,44.5,210.5,0.0,45.0
