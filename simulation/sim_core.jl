@@ -21,6 +21,32 @@ using StatsBase: countmap
 using DataFrames, CSV
 using Plots
 using WICMAD
+using Logging
+
+# Per-MC-run prefixed logger so all messages printed from a given thread/run
+# include the Monte Carlo index for easier tracking in parallel output
+struct PrefixLogger <: AbstractLogger
+    parent::AbstractLogger
+    prefix::String
+end
+
+Logging.min_enabled_level(logger::PrefixLogger) = Logging.min_enabled_level(logger.parent)
+Logging.shouldlog(logger::PrefixLogger, level, _module, group, id) = Logging.shouldlog(logger.parent, level, _module, group, id)
+Logging.catch_exceptions(logger::PrefixLogger) = Logging.catch_exceptions(logger.parent)
+
+function Logging.handle_message(logger::PrefixLogger, level, message, _module, group, id, file, line; kwargs...)
+    prefixed = string(logger.prefix, message)
+    return Logging.handle_message(logger.parent, level, prefixed, _module, group, id, file, line; kwargs...)
+end
+
+with_mc_logger(mc_idx::Integer, f::Function) = Logging.with_logger(PrefixLogger(Logging.current_logger(), string("(mc ", mc_idx, ") "))) do
+    f()
+end
+
+# Accept (function, mc_idx) ordering too, to be resilient to macro expansions
+with_mc_logger(f::Function, mc_idx::Integer) = Logging.with_logger(PrefixLogger(Logging.current_logger(), string("(mc ", mc_idx, ") "))) do
+    f()
+end
 
 # -----------------------------
 # Global controls
@@ -577,7 +603,11 @@ function run_datasets(filter_ids::Union{Nothing,Vector{String}}=nothing)
         @info "[Dataset: $(spec.id)] Running $(mc_runs) MC replications ($(spec.representation))..."
         rows_spec = Vector{NamedTuple}(undef, mc_runs)
         Threads.@threads for mc_idx in 1:mc_runs
-            rows_spec[mc_idx] = run_one(spec.id, spec.title, spec.representation, spec.fn, mc_idx)
+            with_mc_logger(mc_idx) do
+                @info "Starting run $(mc_idx)/$(mc_runs)"
+                rows_spec[mc_idx] = run_one(spec.id, spec.title, spec.representation, spec.fn, mc_idx)
+                @info "Finished run $(mc_idx)/$(mc_runs)"
+            end
         end
         append!(rows, rows_spec)
     end

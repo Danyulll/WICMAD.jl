@@ -1,2 +1,0 @@
-dataset,representation,mc_run,accuracy,precision,recall,f1,map_tn,map_fp,map_fn,map_tp
-mv_one_channel,raw,1,0.67,0.2672413793103448,0.6888888888888889,0.38509316770186336,113,142,15,30
