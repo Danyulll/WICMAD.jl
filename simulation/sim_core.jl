@@ -56,7 +56,7 @@ const t_grid       = range(0.0, 1.0; length=P_use) |> collect
 const Δ            = 1/(P_use - 1)
 const σ_noise      = 0.05
 
-const mc_runs      = 100
+const mc_runs      = 1
 const base_seed    = 0x000000000135CFF1 % UInt64
 
 # Sampler controls

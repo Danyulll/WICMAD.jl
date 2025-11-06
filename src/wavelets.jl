@@ -236,23 +236,24 @@ function update_cluster_wavelet_params_besov(idx::Vector{Int}, precomp, M::Int, 
     end
     ensure_gamma_length!(wpar, ncoeff, M)
 
-    # 1) gamma updates
+    # 1) gamma updates (shared-mean spike–slab odds)
     for m in 1:M
         Dm = view(D, :, :, m)
         gam = wpar.gamma_ch[m]
+        σ2 = sigma2_m[m]
         for lev in det_names
             ids = maps[m].idx[Symbol(lev)]
             isempty(ids) && continue
-            pi_j = wpar.pi_level[lev]
-            g_j = wpar.g_level[lev]
-            Dsub = Dm[ids, :]
-            v_spike = sigma2_m[m]
-            v_slab = (1 + g_j) * sigma2_m[m]
-            ll_spike = -0.5 .* sum(log.(2π * v_spike) .+ (Dsub .^ 2) ./ v_spike; dims = 2)
-            ll_slab = -0.5 .* sum(log.(2π * v_slab) .+ (Dsub .^ 2) ./ v_slab; dims = 2)
-            logit_val = log(pi_j) .+ ll_slab .- (log(1 - pi_j) .+ ll_spike)
-            p1 = logistic.(clamp.(logit_val, -35, 35))
-            gam[ids] = Int.(Base.rand.(Bernoulli.(vec(p1))))
+            π = wpar.pi_level[lev]
+            g = wpar.g_level[lev]
+            # --- shared-mean odds for detail coeffs ---
+            S1 = vec(sum(Dm[ids, :]; dims=2))
+            # log-odds = log(π/(1-π)) - 0.5*log(1 + g*N) + (0.5/σ²)*(g/(1+g*N)) * S1^2
+            c1 = log(π) - log1p(-π) - 0.5 * log1p(g * N)
+            c2 = 0.5 / σ2 * (g / (1.0 + g * N))
+            logit = c1 .+ c2 .* (S1 .^ 2)
+            p1 = 1.0 ./ (1.0 .+ exp.(-clamp.(logit, -35, 35)))
+            gam[ids] = Int.(Base.rand.(Bernoulli.(p1)))
         end
         if length(s_name) == 1
             ids_s = maps[m].idx[Symbol(s_name[1])]
@@ -394,13 +395,11 @@ function update_cluster_wavelet_params_besov_fullbayes(
             π  = wpar.pi_level[lev]
             g  = wpar.g_level[lev]
 
-            # S2 per coefficient at this level
-            S2 = vec(sum(Dm[ids, :].^2; dims=2))
-
-            # log-odds = log(π/(1-π)) - 0.5*N_k*log(1+g) + 0.5/σ²*(1 - 1/(1+g))*S2
-            c1 = log(π) - log1p(-π) - 0.5 * N_k * log1p(g)
-            c2 = 0.5/σ2 * (1.0 - 1.0/(1.0 + g))
-            logit = c1 .+ c2 .* S2
+            # Shared-mean spike–slab odds: use S1 and log(1 + g*N_k)
+            S1 = vec(sum(Dm[ids, :]; dims=2))
+            c1 = log(π) - log1p(-π) - 0.5 * log1p(g * N_k)
+            c2 = 0.5/σ2 * (g / (1.0 + g * N_k))
+            logit = c1 .+ c2 .* (S1 .^ 2)
 
             p1 = 1.0 ./ (1.0 .+ exp.(-clamp.(logit, -35, 35)))
             gam[ids] = Int.(Base.rand.(Bernoulli.(p1)))
@@ -446,21 +445,20 @@ function update_cluster_wavelet_params_besov_fullbayes(
         end
     end
 
-    #### 3) Update g_j (detail) ~ InvGamma(a_g + 0.5*#active, b_g + 0.5*Σ_active S2 / σ²)
+    #### 3) Update g_j (detail) ~ InvGamma(a_g + 0.5*#active, b_g + 0.5*Σ_active β² / σ²)
     for lev in det_names
         a_g, b_g = wpar.a_g, wpar.b_g
         n_on = 0
         sum_term = 0.0
         for m in 1:M
             σ2 = sigma2_m[m]
-            Dm = view(D, :, :, m)
             ids = maps[m].idx[Symbol(lev)]
             isempty(ids) && continue
             on_mask = (wpar.gamma_ch[m][ids] .== 1)
             if any(on_mask)
-                Dsub = Dm[ids[on_mask], :]  # (#on) × N_k
-                n_on += sum(on_mask)
-                sum_term += sum(Dsub.^2) / σ2
+                β_on = beta_ch[m][ids[on_mask]]
+                n_on += length(β_on)
+                sum_term += sum(@. (β_on^2) / σ2)
             end
         end
         if n_on > 0

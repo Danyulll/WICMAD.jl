@@ -86,9 +86,20 @@ interpolate_to_length(data, target_length) = collect(range(minimum(data), maximu
 
 normal_indices = findall(==(0), all_labels)
 anomaly_indices = findall(==(1), all_labels)
-n_anomaly_used = max(1, round(Int, 0.15 * length(anomaly_indices)))
+# Make dataset 15% anomalies
+# Calculate how many anomalies we can use (15% of what we have available)
+n_anomaly_available = length(anomaly_indices)
+# For 15% anomaly ratio: n_anomaly / (n_anomaly + n_normal) = 0.15
+# This means: n_anomaly = 0.15 * (n_anomaly + n_normal) => n_normal = n_anomaly * (1/0.15 - 1) = n_anomaly * (85/15)
+n_anomaly_used = min(n_anomaly_available, length(normal_indices) * 15 ÷ 85)
+n_anomaly_used = max(1, n_anomaly_used)  # At least 1 anomaly
 selected_anomaly_indices = sample(anomaly_indices, n_anomaly_used, replace=false)
-selected_indices = vcat(normal_indices, selected_anomaly_indices)
+# Select corresponding normal samples to maintain 15% anomaly ratio
+# n_normal = n_anomaly * (85/15), but limit by available normals
+n_normal_needed = round(Int, n_anomaly_used * 85 / 15)
+n_normal_used = min(n_normal_needed, length(normal_indices))
+selected_normal_indices = sample(normal_indices, n_normal_used, replace=false)
+selected_indices = vcat(selected_normal_indices, selected_anomaly_indices)
 
 t_grid = collect(range(0, 1, length=P))
 
@@ -101,14 +112,17 @@ end
 # Map original indices to new indices in the subset
 original_to_new = Dict(zip(selected_indices, 1:length(selected_indices)))
 
-# Sample revealed indices from normal samples in the original dataset
-original_revealed_idx = sample(normal_indices, min(7, length(normal_indices)), replace=false)
+# Reveal 15% of the normal group
+n_normal_in_subset = length(selected_normal_indices)
+n_revealed = max(1, round(Int, 0.15 * n_normal_in_subset))
+original_revealed_idx = sample(selected_normal_indices, n_revealed, replace=false)
 
 # Map to new indices in the subset
 revealed_idx = [original_to_new[idx] for idx in original_revealed_idx if idx in keys(original_to_new)]
 
-# Create normal_indices for the subset (all indices that are not revealed)
-normal_indices_subset = setdiff(1:length(selected_indices), revealed_idx)
+# Create normal_indices for the subset (all normal indices, not including revealed ones)
+normal_indices_subset_new = [original_to_new[idx] for idx in selected_normal_indices if idx in keys(original_to_new)]
+normal_indices_subset = setdiff(normal_indices_subset_new, revealed_idx)
 
 println("Data prepared: $(length(Y_raw)) samples, $(length(revealed_idx)) revealed")
 
@@ -260,7 +274,8 @@ println("="^50)
                         revealed_idx=revealed_data,
                         warmup_iters=warmup_iters,
                         diagnostics=false,
-                        wf=selected_wf)
+                        wf=selected_wf,
+                        bootstrap_runs=0)
         
         # Calculate comprehensive metrics
         # Check if we have valid results

@@ -1,0 +1,2 @@
+dataset,representation,mc_run,accuracy,precision,recall,f1,map_tn,map_fp,map_fn,map_tp
+uni_isolated_raw,raw,1,0.9966666666666667,1.0,0.9777777777777777,0.9887640449438202,255,0,1,44

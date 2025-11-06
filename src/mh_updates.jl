@@ -48,7 +48,9 @@ function mh_update_kernel_eig(k::Int, params::Vector{Utils.ClusterParams}, kerne
             ll_prp = sum_ll_curves(curves, cache_prp; process=process, lambdas=lambdas_k)
             lp_cur = kc.prior(kp)
             lp_prp = kc.prior(kp_prop)
-            a = (ll_prp + lp_prp) - (ll_cur + lp_cur)
+            # Jacobian for logistic transform: period = logistic(z)
+            jac = log(prp * (1 - prp)) - log(cur * (1 - cur))
+            a = (ll_prp + lp_prp + jac) - (ll_cur + lp_cur)
             if isfinite(a) && log(Base.rand()) < a
                 cp.thetas[cp.kern_idx] = kp_prop
                 cp.cache = cache_prp
@@ -73,7 +75,11 @@ function mh_update_kernel_eig(k::Int, params::Vector{Utils.ClusterParams}, kerne
             lp_cur = kc.prior(kp)
             lp_prp = kc.prior(kp_prop)
 
-            a = (ll_prp + lp_prp) - (ll_cur + lp_cur)
+            # Jacobian for κ via u = κ/2 = logistic(z): dκ/dz = 2 u (1-u); log 2 cancels
+            u_cur = cur / 2
+            u_prp = prp / 2
+            jac = log(u_prp * (1 - u_prp)) - log(u_cur * (1 - u_cur))
+            a = (ll_prp + lp_prp + jac) - (ll_cur + lp_cur)
             if isfinite(a) && log(Base.rand()) < a
                 cp.thetas[cp.kern_idx] = kp_prop
                 cp.cache = cache_prp
@@ -100,7 +106,9 @@ function mh_update_kernel_eig(k::Int, params::Vector{Utils.ClusterParams}, kerne
             lp_cur = kc.prior(kp)
             lp_prp = kc.prior(kp_prop)
 
-            a = (ll_prp + lp_prp) - (ll_cur + lp_cur)
+            # Jacobian for t0 via u in (0,1): t0 = tmin + (tmax-tmin) * logistic(z)
+            jac = log(u_prp * (1 - u_prp)) - log(u_cur * (1 - u_cur))
+            a = (ll_prp + lp_prp + jac) - (ll_cur + lp_cur)
             if isfinite(a) && log(Base.rand()) < a
                 cp.thetas[cp.kern_idx] = kp_prop
                 cp.cache = cache_prp
