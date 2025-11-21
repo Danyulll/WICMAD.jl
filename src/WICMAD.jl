@@ -147,6 +147,8 @@ function wicmad(
     mh_step_log_nu::Float64 = 0.1,
     # Optional initialization of cluster labels
     z_init::Union{Nothing,Vector{Int}} = nothing,
+    # Verbose output control
+    verbose::Bool = true,
 )
     # Bootstrap dispatch: if bootstrap_runs > 0, use bootstrap driver
     if bootstrap_runs > 0
@@ -168,6 +170,7 @@ function wicmad(
             bootstrap_nworkers=bootstrap_nworkers,
             bootstrap_chunk=bootstrap_chunk,
             bootstrap_seed=bootstrap_seed,
+            verbose=verbose,
             n_iter=n_iter, burn=burn, thin=thin, alpha_prior=alpha_prior,
             wf=wf, J=J, boundary=boundary, mh_step_L=mh_step_L,
             mh_step_eta=mh_step_eta, mh_step_tauB=mh_step_tauB,
@@ -206,18 +209,25 @@ function wicmad(
     t_scaled = Utils.scale_t01(t_norm)
 
     # Automatic wavelet selection if revealed_idx is provided and no specific wavelet is given
-    if !isempty(revealed_idx) && wf == "sym8"  # Only run if using default wavelet
-        println("\n" * "="^60)
-        println("AUTOMATIC WAVELET SELECTION")
-        println("="^60)
-        sel = KernelSelection.select_wavelet(Y_mats, t, revealed_idx; 
-                                             wf_candidates=wf_candidates, 
-                                             J=J, 
-                                             boundary=boundary,
-                                             mcmc=(n_iter=3000, burnin=1000, thin=1))
-        wf = sel.selected_wf
-        println("Selected wavelet '$wf' will be used for the analysis.")
-        println("="^60 * "\n")
+    # Note: We only auto-select if wf is exactly "sym8" (the default), not if it was explicitly set to "sym8"
+    if !isempty(revealed_idx) && wf == "sym8" && wf_candidates === nothing  # Only run if using default wavelet and no candidates specified
+        verbose && println("\n" * "="^60)
+        verbose && println("AUTOMATIC WAVELET SELECTION")
+        verbose && println("="^60)
+        try
+            sel = KernelSelection.select_wavelet(Y_mats, t, revealed_idx; 
+                                                 wf_candidates=wf_candidates, 
+                                                 J=J, 
+                                                 boundary=boundary,
+                                                 mcmc=(n_iter=3000, burnin=1000, thin=1),
+                                                 verbose=verbose)
+            wf = sel.selected_wf
+        catch
+            verbose && println("Wavelet selection failed, using default 'sym8'")
+            wf = "sym8"
+        end
+        verbose && println("Selected wavelet '$wf' will be used for the analysis.")
+        verbose && println("="^60 * "\n")
     end
 
     kernels = make_kernels(add_bias_variants = false)
@@ -297,7 +307,7 @@ function wicmad(
     # Progress reporting setup (no progress bar; periodic thread-aware prints)
     print_interval = max(1, n_iter ÷ 20)  # Print every 5% of iterations
     mode_tag = parallel ? "parallel" : "single-thread"
-    println("Starting WICMAD MCMC with $n_iter iterations ($mode_tag mode)...")
+    verbose && println("Starting WICMAD MCMC with $n_iter iterations ($mode_tag mode)...")
 
     for iter in 1:n_iter
         pi = Utils.stick_to_pi(v)
@@ -406,7 +416,7 @@ function wicmad(
         # Update progress reporting (periodic, per thread)
         if iter % print_interval == 0 || iter == n_iter
             percentage = round(100 * iter / n_iter, digits=1)
-            println("Thread $(Threads.threadid()): $iter/$n_iter ($percentage%) - Clusters: $Kocc")
+            verbose && println("Thread $(Threads.threadid()): $iter/$n_iter ($percentage%) - Clusters: $Kocc")
         end
 
         if keep > 0 && iter > burn && ((iter - burn) % thin == 0)
@@ -448,10 +458,12 @@ function wicmad(
     
     # Calculate final number of clusters
     final_Kocc = length(unique(z))
-    if parallel
-        println("Thread $(Threads.threadid()): MCMC completed! Final clusters: $final_Kocc, Samples collected: $sidx")
-    else
-        println("\nMCMC completed! Final clusters: $final_Kocc, Samples collected: $sidx")
+    if verbose
+        if parallel
+            println("Thread $(Threads.threadid()): MCMC completed! Final clusters: $final_Kocc, Samples collected: $sidx")
+        else
+            println("\nMCMC completed! Final clusters: $final_Kocc, Samples collected: $sidx")
+        end
     end
 
     (; Z = Z_s, alpha = alpha_s, kern = kern_s, params = params, v = v, pi = Utils.stick_to_pi(v),
@@ -686,6 +698,7 @@ function wicmad_bootstrap_driver(
     bootstrap_nworkers::Int = max(1, Sys.CPU_THREADS - 1),
     bootstrap_chunk::Int = 8,
     bootstrap_seed::Int = 2025,
+    verbose::Bool = true,
     kwargs...
 )
     N = length(Y)
@@ -702,9 +715,9 @@ function wicmad_bootstrap_driver(
     # Run wavelet selection first if revealed_idx is provided and using default wavelet
     selected_wf = wf
     if !isempty(revealed_idx) && wf == "sym8"  # Only run if using default wavelet
-        println("\n" * "="^60)
-        println("BOOTSTRAP WAVELET SELECTION")
-        println("="^60)
+        verbose && println("\n" * "="^60)
+        verbose && println("BOOTSTRAP WAVELET SELECTION")
+        verbose && println("="^60)
         
         # Convert Y to matrix format for wavelet selection
         Y_mats = Vector{Matrix{Float64}}(undef, N)
@@ -717,31 +730,39 @@ function wicmad_bootstrap_driver(
         end
         
         # Run wavelet selection
-        sel = KernelSelection.select_wavelet(Y_mats, t, revealed_idx; 
-                                             wf_candidates=wf_candidates, 
-                                             J=J, 
-                                             boundary=boundary,
-                                             mcmc=(n_iter=3000, burnin=1000, thin=1))
+        try
+            sel = KernelSelection.select_wavelet(Y_mats, t, revealed_idx; 
+                                                 wf_candidates=wf_candidates, 
+                                                 J=J, 
+                                                 boundary=boundary,
+                                                 mcmc=(n_iter=3000, burnin=1000, thin=1),
+                                                 verbose=verbose)
+        catch
+            verbose && println("Wavelet selection failed, using default 'sym8'")
+            sel = (selected_wf = "sym8", table = NamedTuple[])
+        end
         selected_wf = sel.selected_wf
-        println("Selected wavelet '$selected_wf' will be used for all bootstrap runs.")
-        println("="^60 * "\n")
+        verbose && println("Selected wavelet '$selected_wf' will be used for all bootstrap runs.")
+        verbose && println("="^60 * "\n")
     end
     
-    # Update kwargs with selected wavelet
-    kwargs_updated = merge(NamedTuple(kwargs), (wf=selected_wf,))
+    # Update kwargs with selected wavelet and verbose
+    kwargs_updated = merge(NamedTuple(kwargs), (wf=selected_wf, verbose=verbose))
     
     # Storage: labels for all N obs × B runs (both full and MAP)
     Zhat_full = Matrix{Int}(undef, N, B)
     Zhat_map = Matrix{Int}(undef, N, B)
     
-    println("Starting bootstrap with $B runs using $bootstrap_parallel parallelization...")
-    println("Using wavelet: $selected_wf")
+    verbose && println("Starting bootstrap with $B runs using $bootstrap_parallel parallelization...")
+    verbose && println("Using wavelet: $selected_wf")
     
     # Diagnostic information
-    if bootstrap_parallel == :threads
-        println("Threading info: $(Threads.nthreads()) threads available")
-    elseif bootstrap_parallel == :processes
-        println("Process info: $(nprocs()) processes available")
+    if verbose
+        if bootstrap_parallel == :threads
+            println("Threading info: $(Threads.nthreads()) threads available")
+        elseif bootstrap_parallel == :processes
+            println("Process info: $(nprocs()) processes available")
+        end
     end
     
     if bootstrap_parallel == :none
@@ -754,12 +775,12 @@ function wicmad_bootstrap_driver(
         
     elseif bootstrap_parallel == :threads
         Threads.@threads for b in 1:B
-            println("Thread $(Threads.threadid()) starting bootstrap run $b")
+            verbose && println("Thread $(Threads.threadid()) starting bootstrap run $b")
             rng = MersenneTwister(bootstrap_seed + b)
             result = _wicmad_bootstrap_one_run(Y, t; n_inbag=n_inbag, method=bootstrap_method, rng=rng, parallel=true, kwargs_updated...)
             Zhat_full[:, b] = result.z_full
             Zhat_map[:, b] = result.z_map
-            println("Thread $(Threads.threadid()) completed bootstrap run $b")
+            verbose && println("Thread $(Threads.threadid()) completed bootstrap run $b")
         end
         
     elseif bootstrap_parallel == :processes

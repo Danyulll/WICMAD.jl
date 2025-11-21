@@ -464,6 +464,8 @@ function update_cluster_wavelet_params_besov_fullbayes(
         if n_on > 0
             shape = a_g + 0.5 * n_on
             rate  = b_g + 0.5 * sum_term
+            # Ensure rate is positive and not too small to avoid numerical issues
+            rate = max(rate, 1e-10)
             # sample IG via 1 / Gamma(shape, 1/rate)
             wpar.g_level[lev] = 1.0 / Base.rand(Gamma(shape, 1.0/rate))
         else

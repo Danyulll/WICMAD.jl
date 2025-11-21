@@ -16,7 +16,7 @@ Apply MCMC-based wavelet smoothing to the mean function using Besov spike-and-sl
 Runs a separate MCMC algorithm with iter=3000, burnin=1000, thin=1.
 """
 function wavelet_smooth_mean_function(Y_mats::Vector{Matrix{Float64}}, revealed_idx::Vector{Int}, wf::String, J::Int, boundary::String;
-                                      return_beta::Bool=false, n_iter_selection::Int=3000, burnin_selection::Int=1000, thin_selection::Int=1)
+                                      return_beta::Bool=false, n_iter_selection::Int=3000, burnin_selection::Int=1000, thin_selection::Int=1, verbose::Bool=false)
     # Compute cluster mean from all revealed samples (this will be the blue curve)
     P, M = size(Y_mats[1])
     cluster_mean = zeros(P, M)
@@ -70,7 +70,7 @@ function wavelet_smooth_mean_function(Y_mats::Vector{Matrix{Float64}}, revealed_
     precomp = WaveletOps.precompute_wavelets(Y_list, wf, J, boundary)
     
     # Run MCMC for wavelet smoothing on the cluster mean
-    println("    Running MCMC for wavelet $wf (iter=$n_iter_selection, burnin=$burnin_selection)...")
+    verbose && println("    Running MCMC for wavelet $wf (iter=$n_iter_selection, burnin=$burnin_selection)...")
     
     # Store samples
     keep = max(0, Int(floor((n_iter_selection - burnin_selection) / thin_selection)))
@@ -98,7 +98,7 @@ function wavelet_smooth_mean_function(Y_mats::Vector{Matrix{Float64}}, revealed_
     
     # Compute posterior mean of wavelet coefficients
     if isempty(beta_samples)
-        println("    Warning: No samples collected for wavelet $wf")
+        verbose && println("    Warning: No samples collected for wavelet $wf")
         return cluster_mean  # Return cluster mean if MCMC failed
     end
     
@@ -116,7 +116,7 @@ function wavelet_smooth_mean_function(Y_mats::Vector{Matrix{Float64}}, revealed_
     # Reconstruct smoothed cluster mean from posterior mean coefficients
     smoothed = WaveletOps.compute_mu_from_beta(posterior_mean_beta, wf, J, boundary, P)
     
-    println("    MCMC completed for wavelet $wf ($n_samples samples)")
+    verbose && println("    MCMC completed for wavelet $wf ($n_samples samples)")
     
     if return_beta
         return (smoothed_mean = smoothed, beta_summaries = (beta_mean = posterior_mean_beta, gamma_last = wpar.gamma_ch))
@@ -185,7 +185,8 @@ Score a wavelet candidate using MCMC-based metrics.
 """
 function score_wavelet_candidate(Y_mats::Vector{Matrix{Float64}}, revealed_idx::Vector{Int}, t::AbstractVector,
                                  wf::String, J, boundary::String;
-                                 mcmc = (n_iter = 3000, burnin = 1000, thin = 1))
+                                 mcmc = (n_iter = 3000, burnin = 1000, thin = 1),
+                                 verbose::Bool = true)
 
     P, M = size(Y_mats[1])
 
@@ -207,7 +208,8 @@ function score_wavelet_candidate(Y_mats::Vector{Matrix{Float64}}, revealed_idx::
                                                  n_iter_selection = mcmc.n_iter,
                                                  burnin_selection = mcmc.burnin,
                                                  thin_selection   = mcmc.thin,
-                                                 return_beta      = true)
+                                                 return_beta      = true,
+                                                 verbose          = verbose)
     smoothed = smoothed_pack.smoothed_mean
     βsumm    = smoothed_pack.beta_summaries
     β̄_post  = βsumm.beta_mean
@@ -250,7 +252,8 @@ Select the best wavelet using MCMC-based scoring.
 function select_wavelet(Y, t, revealed_idx;
                         wf_candidates = nothing, J = nothing, boundary = "periodic",
                         metric_weights = (w_time = 0.5, w_coeff = 0.3, w_sparsity = 0.2),
-                        mcmc = (n_iter = 3000, burnin = 1000, thin = 1))
+                        mcmc = (n_iter = 3000, burnin = 1000, thin = 1),
+                        verbose::Bool = true)
 
     # Normalize inputs to P×M matrices
     Y_mats = Vector{Matrix{Float64}}(undef, length(Y))
@@ -269,13 +272,13 @@ function select_wavelet(Y, t, revealed_idx;
     results = NamedTuple[]
     best = (wf = "", score = Inf)
 
-    println("Testing $(length(wf_candidates)) wavelet candidates with MCMC scoring...")
-    println("MCMC parameters: $(mcmc.n_iter) iterations, $(mcmc.burnin) burn-in, thin=$(mcmc.thin)")
+    verbose && println("Testing $(length(wf_candidates)) wavelet candidates with MCMC scoring...")
+    verbose && println("MCMC parameters: $(mcmc.n_iter) iterations, $(mcmc.burnin) burn-in, thin=$(mcmc.thin)")
 
     for wf in wf_candidates
         try
-            println("  Testing wavelet: $wf")
-            met = score_wavelet_candidate(Y_mats, revealed_idx, t, wf, J, boundary; mcmc = mcmc)
+            verbose && println("  Testing wavelet: $wf")
+            met = score_wavelet_candidate(Y_mats, revealed_idx, t, wf, J, boundary; mcmc = mcmc, verbose=verbose)
             score = metric_weights.w_time    * met.mse_time +
                     metric_weights.w_coeff   * met.mse_coeff +
                     metric_weights.w_sparsity * (1.0 - met.sparsity)
@@ -290,27 +293,31 @@ function select_wavelet(Y, t, revealed_idx;
                 best = (wf = wf, score = score)
             end
             
-            println("    MSE_time: $(round(met.mse_time, digits=6)), MSE_coeff: $(round(met.mse_coeff, digits=6)), Sparsity: $(round(met.sparsity, digits=3)), Score: $(round(score, digits=6))")
+            verbose && println("    MSE_time: $(round(met.mse_time, digits=6)), MSE_coeff: $(round(met.mse_coeff, digits=6)), Sparsity: $(round(met.sparsity, digits=3)), Score: $(round(score, digits=6))")
         catch e
             @warn "Wavelet $wf failed during selection: $e"
         end
     end
 
     if isempty(results)
-        error("All wavelet candidates failed during selection")
+        verbose && @warn "All wavelet candidates failed during selection, defaulting to 'sym8'"
+        return (selected_wf = "sym8", table = NamedTuple[])
     end
 
     results_sorted = sort(results; by = r -> r.score)
+    best_result = results_sorted[1]  # Best is the one with lowest score
     
-    println("\nWavelet Selection Results:")
-    println("wf        MSE_time    MSE_coeff   Sparsity   Score")
-    println("-" ^ 70)
-    for r in results_sorted
-        println("$(lpad(r.wf, 8)) $(lpad(round(r.mse_time, digits=6), 10)) $(lpad(round(r.mse_coeff, digits=6), 10)) $(lpad(round(r.sparsity, digits=3), 9)) $(lpad(round(r.score, digits=6), 10))")
+    verbose && println("\nWavelet Selection Results:")
+    verbose && println("wf        MSE_time    MSE_coeff   Sparsity   Score")
+    verbose && println("-" ^ 70)
+    if verbose
+        for r in results_sorted
+            println("$(lpad(r.wf, 8)) $(lpad(round(r.mse_time, digits=6), 10)) $(lpad(round(r.mse_coeff, digits=6), 10)) $(lpad(round(r.sparsity, digits=3), 9)) $(lpad(round(r.score, digits=6), 10))")
+        end
     end
-    println("Selected wavelet: $(best.wf) (score: $(round(best.score, digits=6)))")
+    verbose && println("Selected wavelet: $(best_result.wf) (score: $(round(best_result.score, digits=6)))")
     
-    return (selected_wf = best.wf, table = results_sorted)
+    return (selected_wf = best_result.wf, table = results_sorted)
 end
 
 end # module

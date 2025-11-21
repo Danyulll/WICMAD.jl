@@ -29,7 +29,7 @@ function plot_dataset_before_clustering(series, labels, t; title="Dataset Before
     plots = []
     
     for dim in 1:n_dims
-        p = plot(title="Dimension $dim", xlabel="Time", ylabel="Value", 
+        p = plot(title="", xlabel="Time", ylabel="Value", 
                 legend=:topright, size=(800, 400))
         
         # Plot normal samples (label = 0)
@@ -54,11 +54,11 @@ function plot_dataset_before_clustering(series, labels, t; title="Dataset Before
     # Combine plots
     if n_dims == 1
         final_plot = plots[1]
+        plot!(final_plot, title=title, plot_titlefontsize=14)
     else
         final_plot = plot(plots..., layout=(n_dims, 1), size=(800, 400*n_dims))
+        plot!(final_plot, plot_title=title, plot_titlefontsize=14)
     end
-    
-    plot!(final_plot, title=title, plot_titlefontsize=14)
     
     if save_path !== nothing
         savefig(final_plot, save_path)
@@ -88,23 +88,52 @@ function plot_dataset_after_clustering(series, clusters, t; title="Dataset After
     n_dims = size(series[1], 2)
     plots = []
     
-    # Get unique clusters and assign colors
+    # Check if clusters are binary labels (0/1) or actual cluster numbers
     unique_clusters = sort(unique(clusters))
-    colors = [:blue, :red, :green, :orange, :purple, :brown, :pink, :gray, :olive, :cyan]
+    is_binary = length(unique_clusters) == 2 && all(c -> c in [0, 1], unique_clusters)
+    
+    # Determine largest cluster for non-binary case
+    largest_cluster = is_binary ? nothing : argmax(countmap(clusters))
+    
+    # Use consistent colors: blue for normal (0), red for anomaly (1)
+    # For non-binary clusters, use a color palette but ensure largest cluster is blue
+    if is_binary
+        # Binary labels: use blue for normal (0), red for anomaly (1)
+        cluster_colors = Dict(0 => :blue, 1 => :red)
+        cluster_labels = Dict(0 => "Normal", 1 => "Anomaly")
+    else
+        # Multiple clusters: largest cluster gets blue (normal), others get red (anomaly)
+        cluster_colors = Dict{Int, Symbol}()
+        cluster_labels = Dict{Int, String}()
+        for cluster in unique_clusters
+            if cluster == largest_cluster
+                cluster_colors[cluster] = :blue
+                cluster_labels[cluster] = "Normal"
+            else
+                cluster_colors[cluster] = :red
+                cluster_labels[cluster] = "Anomaly"
+            end
+        end
+    end
     
     for dim in 1:n_dims
-        p = plot(title="Dimension $dim", xlabel="Time", ylabel="Value", 
+        p = plot(title="", xlabel="Time", ylabel="Value", 
                 legend=:topright, size=(800, 400))
         
-        # Plot each cluster
-        for (i, cluster) in enumerate(unique_clusters)
+        # Plot each cluster/label
+        for cluster in unique_clusters
             cluster_indices = findall(==(cluster), clusters)
-            color = colors[mod(i-1, length(colors)) + 1]
+            color = cluster_colors[cluster]
+            label_text = cluster_labels[cluster]
             
             for (j, idx) in enumerate(cluster_indices)
+                # Use same linewidth as before plot: 1 for normal, 2 for anomaly
+                is_anomaly = (is_binary && cluster == 1) || (!is_binary && cluster != largest_cluster)
+                lw = is_anomaly ? 2 : 1
+                alpha_val = is_anomaly ? 0.8 : 0.6
                 plot!(p, t, series[idx][:, dim], 
-                      color=color, alpha=0.6, linewidth=1,
-                      label=j == 1 ? "Cluster $cluster" : "")
+                      color=color, alpha=alpha_val, linewidth=lw,
+                      label=j == 1 ? label_text : "")
             end
         end
         
@@ -114,11 +143,11 @@ function plot_dataset_after_clustering(series, clusters, t; title="Dataset After
     # Combine plots
     if n_dims == 1
         final_plot = plots[1]
+        plot!(final_plot, title=title, plot_titlefontsize=14)
     else
         final_plot = plot(plots..., layout=(n_dims, 1), size=(800, 400*n_dims))
+        plot!(final_plot, plot_title=title, plot_titlefontsize=14)
     end
-    
-    plot!(final_plot, title=title, plot_titlefontsize=14)
     
     if save_path !== nothing
         savefig(final_plot, save_path)
@@ -129,7 +158,7 @@ function plot_dataset_after_clustering(series, clusters, t; title="Dataset After
 end
 
 """
-    plot_clustering_comparison(series, true_labels, clusters, t; save_path=nothing)
+    plot_clustering_comparison(series, true_labels, clusters, t; dataset_name="", save_path=nothing)
 
 Create a side-by-side comparison of the dataset before and after clustering.
 
@@ -138,54 +167,91 @@ Create a side-by-side comparison of the dataset before and after clustering.
 - `true_labels`: Vector of true binary labels
 - `clusters`: Vector of cluster assignments
 - `t`: Time vector
+- `dataset_name`: Optional dataset name to include in subplot titles
 - `save_path`: Optional path to save the plot
 
 # Returns
 - Plot object
 """
-function plot_clustering_comparison(series, true_labels, clusters, t; save_path=nothing)
+function plot_clustering_comparison(series, true_labels, clusters, t; dataset_name="", save_path=nothing)
     n_dims = size(series[1], 2)
     
     # Create before and after plots for each dimension
     all_plots = []
     
+    # Create title strings
+    before_title = dataset_name != "" ? "$dataset_name - Before Clustering" : "Before Clustering"
+    after_title = dataset_name != "" ? "$dataset_name - After Clustering" : "After Clustering"
+    
     for dim in 1:n_dims
         # Before clustering plot
-        p_before = plot(title="Before Clustering (Dim $dim)", xlabel="Time", ylabel="Value", 
-                       legend=:topright, size=(400, 300))
+        plot_title = n_dims > 1 ? "$before_title (Dim $dim)" : before_title
+        p_before = plot(title=plot_title, xlabel="Time", ylabel="Value", 
+                       legend=:topright, size=(500, 400),
+                       titlefontsize=12, xguidefontsize=11, yguidefontsize=11, legendfontsize=11)
         
         # Plot normal samples
         normal_indices = findall(==(0), true_labels)
-        for idx in normal_indices
+        for (idx_count, idx) in enumerate(normal_indices)
             plot!(p_before, t, series[idx][:, dim], 
-                  color=:blue, alpha=0.6, linewidth=1, 
-                  label=idx == normal_indices[1] ? "Normal" : "")
+                  color=:blue, alpha=0.6, linewidth=1.5, 
+                  label=idx_count == 1 ? "Normal" : "")
         end
         
         # Plot anomaly samples
         anomaly_indices = findall(==(1), true_labels)
-        for idx in anomaly_indices
+        for (idx_count, idx) in enumerate(anomaly_indices)
             plot!(p_before, t, series[idx][:, dim], 
-                  color=:red, alpha=0.8, linewidth=2, 
-                  label=idx == anomaly_indices[1] ? "Anomaly" : "")
+                  color=:red, alpha=0.3, linewidth=1.5, 
+                  label=idx_count == 1 ? "Anomalous" : "")
         end
         
         # After clustering plot
-        p_after = plot(title="After Clustering (Dim $dim)", xlabel="Time", ylabel="Value", 
-                      legend=:topright, size=(400, 300))
+        plot_title_after = n_dims > 1 ? "$after_title (Dim $dim)" : after_title
+        p_after = plot(title=plot_title_after, xlabel="Time", ylabel="Value", 
+                      legend=:topright, size=(500, 400),
+                      titlefontsize=12, xguidefontsize=11, yguidefontsize=11, legendfontsize=11)
         
-        # Get unique clusters and assign colors
+        # Check if clusters are binary labels (0/1) or actual cluster numbers
         unique_clusters = sort(unique(clusters))
-        colors = [:blue, :red, :green, :orange, :purple, :brown, :pink, :gray, :olive, :cyan]
+        is_binary = length(unique_clusters) == 2 && all(c -> c in [0, 1], unique_clusters)
         
-        for (i, cluster) in enumerate(unique_clusters)
+        # Use consistent colors: blue for normal (0), red for anomaly (1)
+        if is_binary
+            cluster_colors = Dict(0 => :blue, 1 => :red)
+            cluster_labels = Dict(0 => "Normal", 1 => "Anomalous")
+        else
+            # Multiple clusters: largest cluster gets blue (normal), others get red (anomaly)
+            cluster_counts = countmap(clusters)
+            largest_cluster = argmax(cluster_counts)
+            cluster_colors = Dict{Int, Symbol}()
+            cluster_labels = Dict{Int, String}()
+            for cluster in unique_clusters
+                if cluster == largest_cluster
+                    cluster_colors[cluster] = :blue
+                    cluster_labels[cluster] = "Normal"
+                else
+                    cluster_colors[cluster] = :red
+                    cluster_labels[cluster] = "Anomalous"
+                end
+            end
+        end
+        
+        # Determine largest cluster for linewidth/alpha calculation
+        largest_cluster_after = is_binary ? nothing : argmax(countmap(clusters))
+        
+        for cluster in unique_clusters
             cluster_indices = findall(==(cluster), clusters)
-            color = colors[mod(i-1, length(colors)) + 1]
+            color = cluster_colors[cluster]
+            label_text = cluster_labels[cluster]
             
             for (j, idx) in enumerate(cluster_indices)
+                # Use same style as before plot: alpha=0.6 for normal, alpha=0.3 for anomaly, linewidth=1.5
+                is_anomaly = (is_binary && cluster == 1) || (!is_binary && cluster != largest_cluster_after)
+                alpha_val = is_anomaly ? 0.3 : 0.6
                 plot!(p_after, t, series[idx][:, dim], 
-                      color=color, alpha=0.6, linewidth=1,
-                      label=j == 1 ? "Cluster $cluster" : "")
+                      color=color, alpha=alpha_val, linewidth=1.5,
+                      label=j == 1 ? label_text : "")
             end
         end
         
@@ -194,11 +260,11 @@ function plot_clustering_comparison(series, true_labels, clusters, t; save_path=
     
     # Create layout: 2 columns (before/after) × n_dims rows
     layout = @layout([grid(n_dims, 2)])
-    final_plot = plot(all_plots..., layout=layout, size=(800, 300*n_dims))
+    final_plot = plot(all_plots..., layout=layout, size=(1000, 400*n_dims))
+    # Title will be set by caller if needed
     
     if save_path !== nothing
         savefig(final_plot, save_path)
-        println("Comparison plot saved to: $save_path")
     end
     
     return final_plot

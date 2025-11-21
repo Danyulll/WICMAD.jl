@@ -1,0 +1,630 @@
+---
+title: "Functional Anomaly Detection"
+author: "Daniel Krasnov"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: show
+    code-tools: true
+    theme: cosmo
+execute:
+  warning: false
+  message: false
+  engine: julia
+bibliography: references.bib
+---
+
+```{julia}
+#| echo: true
+#| label: setup
+#| include: false
+
+# Setup environment and install dependencies
+using Pkg
+
+# Activate the examples environment
+Pkg.activate(@__DIR__)
+
+# Develop the WICMAD package from parent directory
+Pkg.develop(path=dirname(@__DIR__))
+
+# Ensure all required packages are available
+required_packages = ["StatsBase", "Interpolations", "Plots"]
+for pkg in required_packages
+    try
+        Pkg.add(pkg)
+    catch
+        # Already installed or in dependencies
+    end
+end
+
+# Instantiate to ensure all dependencies are resolved
+Pkg.instantiate();
+
+# Set random seed for reproducibility
+using Random
+Random.seed!(42)
+```
+
+## Introduction
+
+This document showcases my master's thesis work on functional anomaly detection. Specifically, I created a Bayesian nonparametric method for detecting multivariate functional anomalies. The method combines:
+
+-   **Wavelet decompositions** for mean function representation.
+-   **Dirichlet Process (DP) mixture models** for automatic cluster number determination.
+-   **Carlin-Chib step** for automatic covariance kernels selection.
+-   **Spike-slab priors** in the wavelet domain for smoothing.
+
+In general, what makes anomaly detection different than clustering is the class imbalance. We assume each dataset is 15% anomalies and do not give any prior information on the number or type of anomalies. To give the model some sense of normal, we also reveal 15% of the normal class labels making this a semi-supervised learning problem.
+
+## Mathematical Formulation
+
+First, I give a brief overview of the model before I showcase the applications. If you would like a full introduction to the model, please refer to my thesis which will be published soon.
+
+### Model Structure
+
+Let $\mathbf{Y} = \{Y_1, \ldots, Y_N\}$ be a collection of $N$ functional observations, where each $Y_i: \mathcal{T} \to \mathbb{R}^M$ is a multivariate function defined on a time domain $\mathcal{T}$.
+
+The model assumes that each function $Y_i$ belongs to one of $K$ clusters (where $K$ is potentially infinite), and functions within the same cluster share similar characteristics. The model can be written as:
+
+$$Y_i(t) = \mu_{z_i}(t) + \epsilon_i(t), \quad i = 1, \ldots, N$$
+
+where:
+
+-   $z_i \in \{1, 2, \ldots\}$ is the cluster assignment for observation $i$
+-   $\mu_k(t)$ is the mean function for cluster $k$
+-   $\epsilon_i(t)$ is a zero-mean error process
+
+### Dirichlet Process Prior
+
+The cluster assignments follow a Dirichlet Process (DP) prior, which allows for an infinite number of clusters:
+
+$$z_i \mid \boldsymbol{\pi} \sim \text{Categorical}(\boldsymbol{\pi})$$
+
+where $\boldsymbol{\pi} = (\pi_1, \pi_2, \ldots)$ are the cluster probabilities. The DP is constructed using the stick-breaking representation:
+
+$$\pi_k = v_k \prod_{j=1}^{k-1}(1 - v_j), \quad v_k \sim \text{Beta}(1, \alpha)$$
+
+Here, $\alpha > 0$ is the concentration parameter that controls the number of clusters. In order to avoid arbitrary truncation of the infinite sum, we use Walker's slice sampling method [@walker2007].
+
+### Wavelet Representation
+
+Each mean function $\mu_k(t)$ is represented in a wavelet basis. Consider performing a discrete wavelet transform on our data. Then, for each dimension $m$, we have $$
+\mu_{k,m}(t)
+= \sum_{\ell=1}^{L} \alpha_{k,m,\ell}\,\phi_{\ell}(t)
++ \sum_{j=1}^{J}\sum_{\ell=1}^{L_j}\beta_{k,m,j,\ell}\,\psi_{j,\ell}(t),
+$$
+
+where $\phi_\ell(t)$ are scaling functions and $\psi_{j,\ell}(t)$ are wavelet functions with scale $j$ and position $\ell$ [@ray2006].
+
+### Spike-Slab Prior
+
+Each detail coefficient $\beta_{k,m,j,\ell}$ follows a spike–and–slab prior:
+
+$$
+\beta_{k,m,j,\ell} \mid \gamma_{k,m,j,\ell}
+\sim (1-\gamma_{k,m,j,\ell})\,\delta_0
+    + \gamma_{k,m,j,\ell}\,\mathcal{N}\!\big(0,\,\sigma_{k,m}^2g_{k,j}\big),
+\qquad
+\gamma_{k,m,j,\ell} \sim \mathrm{Bernoulli}(\pi_{k,j}).
+$$
+
+Here $\gamma_{k,m,j,\ell}$ indicates whether a coefficient is active, $\sigma_{k,m}^2$ is the per-dimension variability, and $g_{k,j}$ is the per-level variation. The inclusion probability $\pi_{k,j}$ controls the expected sparsity of level $j$ and is given a Beta prior: $$
+\pi_{k,j} \sim \mathrm{Beta}\!\big(\tau_\pi m_j,\;\tau_\pi (1-m_j)\big),
+\qquad
+m_j = \kappa_\pi\, 2^{-c_2 j}.
+$$
+
+Under this parameterization,
+
+$$
+\mathbb{E}[\pi_{k,j}] = m_j = \kappa_\pi\, 2^{-c_2 j},
+$$
+
+so that finer scales have smaller expected inclusion probabilities [@ray2006].
+
+### Kernel Selection
+
+Let $s_c\in\{1,\dots,R\}$ denote the kernel–family indicator for cluster $c$, which corresponds to one covariance family from
+
+$$
+\mathcal K =
+\Big\{
+k^{(\mathrm{SE})},\;
+k^{(\mathrm{Mat}\,3/2)},\;
+k^{(\mathrm{Mat}\,5/2)},\;
+k^{(\mathrm{Per})},\;
+k^{(\mathrm{RQ})},\;
+k^{(\mathrm{PowExp})},\;
+k^{(\mathrm{GibbsPC3})},\;
+k^{(\mathrm{CP\text{-}M52})}
+\Big\}.
+$$
+
+These denote the squared exponential, Matérn with $\nu=3/2$, Matérn with $\nu=5/2$, periodic, rational quadratic, powered exponential, Gibbs with piecewise–constant lengthscale in three bins, and changepoint Matérn–$5/2$ kernels respectively. Each family $r$ has its own hyperparameters $\phi_{c,r}$, and all kernels are normalized to have unit marginal variance for identifiability.
+
+Kernel switching is carried out using the method of Carlin and Chib [@carlin1995bayesian]. For each cluster $c$ and each kernel family $r$, we define a parameter vector $\phi_{c,r}$ and refresh it from its pseudoprior when that kernel is inactive. The pseudopriors are chosen to match the true priors so that the ratio $p_r/q_r$ cancels. Only the active pair $(s_c,\phi_{c,s_c})$ contributes to the likelihood, and the indicator $s_c$ is sampled from a categorical distribution with weights
+
+$$
+w_r \propto
+\mathcal{N}\!\Big(
+Y_{c,\mathrm{res}}\mid 0,\,
+\tau_{B,c}\,B_c^{\text{shape}}\otimes K_x^{(r)}(\phi_{c,r})
++ \mathrm{diag}(\eta_c)\otimes I_P
+\Big),
+\qquad
+\pi(s_c{=}r)=1/R.
+$$
+
+## ICM
+
+In order to accomdate multivarte functions we represent the residual process within each cluster as a multi-output Gaussian process. Let $Y_{c,\mathrm{res}}\in\mathbb{R}^{P\times M}$ denote the residuals for cluster $c$, where $P$ is the number of time points and $M$ the number of dimensions. Vectorizing columnwise, the model assumes
+
+$$
+\operatorname{vec}(Y_{c,\mathrm{res}}) \sim \mathcal{N}\!\left(0,\;
+K_x^{(s_c)} \otimes B_c \,+\, I_P \otimes \mathrm{diag}(\eta_c)\right),
+$$
+
+where $K_x^{(s_c)}$ is the $P\times P$ covariance matrix corresponding to the Carlin–Chib selected kernel family $s_c$, $B_c$ is an $M\times M$ positive semi-definite coregionalization matrix, and $\eta_c\in\mathbb{R}_{+}^M$ contains dimension-specific noise variances. This is known as the Intrinsic Coregionalization Model (ICM) [@alvarez2012kernels].
+
+With this we may now write the full hierarchical model: $$
+\begin{align*}
+\alpha &\sim \mathrm{Gamma}(a_\alpha,b_\alpha) \\[6pt]
+v_k \mid \alpha &\sim \mathrm{Beta}(1,\alpha), \qquad
+\pi_k \;=\; v_k \prod_{j<k} (1-v_j) \\[6pt]
+z_i \mid \{\pi_k\} &\sim \mathrm{Categorical}(\{\pi_k\}) \\[10pt]
+%
+\theta_k &\sim G_0  \\[2pt]
+\theta_k &= \Big(
+\{\beta_{k,m,j,\ell}\},\;
+\{\gamma_{k,m,j,\ell}\},\;
+\{g_{k,j}\},\;
+\{\pi_{k,j}\},\;
+\{\sigma_{k,m}^2\},\;
+\tau_{\sigma,k}, \\[-2pt]
+&\hspace{2cm}
+\tau_{B,k},\;
+B_k^{\text{shape}},\;
+\eta_k,\;
+s_k,\;
+\{\phi_{k,r}\}_{r=1}^R
+\Big)
+\\[12pt]
+\pi_{k,j} &\sim \mathrm{Beta}(\tau_\pi m_j,\,\tau_\pi(1-m_j)), \qquad m_j=\kappa_\pi\,2^{-c_2 j} \\[4pt]
+\gamma_{k,m,j,\ell}\mid \pi_{k,j} &\sim \mathrm{Bernoulli}(\pi_{k,j}) \\[4pt]
+\beta_{k,m,j,\ell}\mid \gamma_{k,m,j,\ell}, g_{k,j}, \sigma_{k,m}^2
+&\sim (1-\gamma_{k,m,j,\ell})\,\delta_0 + \gamma_{k,m,j,\ell}\,\mathcal N(0,\,g_{k,j}\sigma_{k,m}^2) \\[4pt]
+g_{k,j} &\sim \mathrm{Inv\text{-}Gamma}(a_g,b_g), \qquad
+\sigma_{k,m}^2 \mid \tau_{\sigma,k} \sim \mathrm{Inv\text{-}Gamma}(a_\sigma,\, b_\sigma \tau_{\sigma,k})
+\\[4pt]
+\tau_{\sigma,k} &\sim \mathrm{Gamma}(a_\tau,b_\tau)
+\\[12pt]
+B_k^{\text{shape}} &= \dfrac{L_k L_k^\top}{\mathrm{tr}(L_k L_k^\top)}
+\\[4pt]
+(L_k)_{ab} &\sim \mathcal N(0,1)\ (a\ge b), \qquad
+\eta_{k,m} \sim \mathrm{Inv\text{-}Gamma}(a_\eta,b_\eta)
+\\[12pt]
+\phi_{k,r} &\sim p_r(\cdot),\quad r=1,\dots,R \\[4pt]
+s_k &\sim \mathrm{Categorical}\!\big(\tfrac{1}{R},\dots,\tfrac{1}{R}\big) \\[4pt]
+w_{k,r} &\propto \tfrac{1}{R}\;
+\mathcal N\!\Big(
+\mathrm{vec}(Y_{k,\mathrm{res}})\mid 0,\;
+\tau_{B,k} B_k^{\text{shape}}\!\otimes\! K_x^{(r)}(\phi_{k,r})
++ \mathrm{diag}(\eta_k)\!\otimes\! I_P
+\Big)
+\\[4pt]
+s_k \mid Y_k,\{\phi_{k,r}\}_{r=1}^R,\tau_{B,k},B_k^{\text{shape}},\eta_k
+&\sim \mathrm{Categorical}(w_{k,1},\dots,w_{k,R})
+\\[12pt]
+\mathrm{vec}\!\big(Y_i - \mu_{z_i}\big) \mid z_i=k,\theta_k
+&\sim \mathcal N\!\Big(
+0,\;
+\tau_{B,k} B_k^{\text{shape}}\!\otimes\! K_x^{(s_k)}(\phi_{k,s_k})
++ \mathrm{diag}(\eta_k)\!\otimes\! I_P
+\Big).
+\end{align*}
+$$
+
+## Data Loading and Preprocessing
+
+To showcase model performance, I analyze two datasets from the [Time Series Machine Learning Website](https://www.timeseriesclassification.com/):
+
+1.  **AsphaltRegularity**: Road surface regularity measurements
+2.  **CharacterTrajectories**: Handwritten character trajectories
+
+```{julia}
+#| label: imports
+#| echo: true
+#| depends-on: setup
+
+using WICMAD
+using WICMAD.PostProcessing: map_from_res
+using Statistics
+using StatsBase: countmap, sample
+using Interpolations
+using Plots
+
+# Define data directory early so it's available to all chunks
+data_dir = joinpath(dirname(@__DIR__), "data");
+```
+
+```{julia}
+#| label: helper-functions
+#| depends-on: imports
+
+using Printf;
+
+# Interpolate to power-of-two grid
+function interpolate_to_length(series::Vector{Matrix{Float64}}; target_len::Int = 32)
+    out = Vector{Matrix{Float64}}(undef, length(series))
+    for (i, X) in pairs(series)
+        P0, M0 = size(X)
+        x_old = collect(1:P0)
+        x_new = collect(range(1, P0, length=target_len))
+        Xn = Array{Float64}(undef, target_len, M0)
+        for m in 1:M0
+            itp = linear_interpolation(x_old, @view X[:, m])
+            Xn[:, m] = itp.(x_new)
+        end
+        out[i] = Xn
+    end
+    return out, target_len
+end
+
+# Relabel to consecutive integers
+function relabel_consecutive(z::Vector)
+    labs = unique(z)
+    m = Dict(lab => i for (i, lab) in enumerate(labs))
+    return [m[v] for v in z]
+end
+
+# Find largest cluster (assumed to be normal class)
+function largest_cluster(z::AbstractVector{Int})
+    counts = countmap(z)
+    keys_sorted = sort(collect(keys(counts)); by = k -> -counts[k])
+    return keys_sorted[1]
+end
+
+# Convert to binary labels (normal=0, anomaly=1)
+function to_binary_labels(z::AbstractVector{Int})
+    k_norm = largest_cluster(z)
+    return [zi == k_norm ? 0 : 1 for zi in z]
+end
+
+# Print & return confusion matrix and common metrics
+function confusion_matrix(name::AbstractString, ytrue::Vector{Int}, ypred::Vector{Int})
+    @assert length(ytrue) == length(ypred) "ytrue and ypred must have same length"
+
+    tp = sum((ytrue .== 1) .& (ypred .== 1))
+    tn = sum((ytrue .== 0) .& (ypred .== 0))
+    fp = sum((ytrue .== 0) .& (ypred .== 1))
+    fn = sum((ytrue .== 1) .& (ypred .== 0))
+
+    n = tp + tn + fp + fn
+    accuracy  = n > 0 ? (tp + tn) / n : 0.0
+    precision = (tp + fp) > 0 ? tp / (tp + fp) : 0.0
+    recall    = (tp + fn) > 0 ? tp / (tp + fn) : 0.0
+    f1        = (precision + recall) > 0 ? 2 * precision * recall / (precision + recall) : 0.0
+
+    println("------------------------------------------------------------")
+    println("Confusion matrix — $name")
+    println(" (rows = true class, cols = predicted class; normal=0, anomaly=1)")
+    println()
+    println(rpad("", 10), rpad("Pred=0", 10), "Pred=1")
+    println(rpad("True=0",10), rpad(string(tn),10), string(fp))
+    println(rpad("True=1",10), rpad(string(fn),10), string(tp))
+    println()
+    @printf("N = %d   Accuracy = %.3f   Precision = %.3f   Recall = %.3f   F1 = %.3f\n",
+            n, accuracy, precision, recall, f1)
+    println("------------------------------------------------------------\n")
+
+    return (tp=tp, tn=tn, fp=fp, fn=fn,
+            accuracy=accuracy, precision=precision, recall=recall, f1=f1)
+end;
+```
+
+## Dataset 1: AsphaltRegularity
+
+The Asphalt Regularity dataset contains accelerometer data recorded on a smartphone as a car drove over a cobblestone street and a dirt road. The x, y, and z accelerations were recorded and combined into an acceleration magnitude value, resulting in a univariate functional dataset.
+
+```{julia}
+#| label: load-asphalt
+#| depends-on: imports, helper-functions
+
+# Reset seed for reproducibility (before data sampling)
+Random.seed!(42)
+
+# Ensure data_dir is available (in case it wasn't persisted)
+data_dir = joinpath(dirname(@__DIR__), "data")
+
+ds_loaded = WICMAD.Utils.load_ucr_dataset("AsphaltRegularity/AsphaltRegularity", data_dir)
+
+# Select normal and anomaly classes
+cm = countmap(ds_loaded.labels)
+classes_sorted = sort(collect(keys(cm)); by = c -> -cm[c])
+normal_class = classes_sorted[1]
+anomaly_class = classes_sorted[2]
+
+normal_indices_full = findall(==(normal_class), ds_loaded.labels)
+anomaly_indices_full = findall(==(anomaly_class), ds_loaded.labels)
+
+# Target anomaly proportion: 15%
+p_anom = 0.15
+ratio = p_anom / (1 - p_anom)
+
+avail_norm = length(normal_indices_full)
+avail_anom = length(anomaly_indices_full)
+
+n_anom_max_by_norm = floor(Int, ratio * avail_norm)
+n_anomaly_used = min(avail_anom, n_anom_max_by_norm)
+n_normal_used = min(avail_norm, round(Int, n_anomaly_used * (1 - p_anom) / p_anom))
+
+used_normal_indices = sample(normal_indices_full, n_normal_used, replace=false)
+used_anomaly_indices = sample(anomaly_indices_full, n_anomaly_used, replace=false)
+all_used_indices = vcat(used_normal_indices, used_anomaly_indices)
+shuffle!(all_used_indices)
+
+# Subset data
+Y_full = ds_loaded.series[all_used_indices]
+y_full = [ds_loaded.labels[i] for i in all_used_indices]
+
+# Interpolate to power-of-two grid
+Y_interp, P = interpolate_to_length(Y_full; target_len=32)
+
+# Convert to matrix format
+X = zeros(length(Y_interp), P)
+for i in 1:length(Y_interp)
+    X[i, :] = vec(Y_interp[i])
+end
+
+t = collect(1:P)
+
+# Ground-truth labels
+gt_binary = [yi == normal_class ? 0 : 1 for yi in y_full]
+z_true = relabel_consecutive(y_full);
+```
+
+Before we estimate the model we must choose a wavelet family. To do so we use a weighted sum.It is comprised of three values: function–domain mean squared error, coefficient–domain mean squared error, and a sparsity measure derived from the spike–and–slab indicators. Let $\mathcal{W}$ denote the set of candidate wavelets. For $w \in \mathcal{W}$, let $R$ be the set of revealed normal indices, and let $\bar{y}(t_p) = |R|^{-1} \sum_{i \in R} y_i(t_p)$ be the empirical mean function on the common grid $\{t_p\}_{p=1}^P$. After running the wavelet shrinkage MCMC algorithm we calculate the posterior mean coefficient vectors $\widehat{\beta}^{(w)}$ and the last sampled inclusion indicators $\gamma^{(w)}$, from which we reconstruct the smoothed mean $\widehat{f}^{(w)}(t_p)$.
+
+The function–domain error for $w$ is $$
+\mathrm{MSE}_{\mathrm{fun}}(w)
+=
+\frac{1}{P}\sum_{p=1}^{P}\Bigl(\bar{y}(t_p) - \widehat{f}^{(w)}(t_p)\Bigr)^2.
+$$
+
+Let $D_w$ be the discrete wavelet transform associated with $w$. For each channel $m=1,\ldots,M$, define the average observed coefficient vector under $w$, $\bar{c}_m^{(w)} = |R|^{-1} \sum_{i \in R} \bigl(D_w y_i\bigr)_m,$ and the smoothed mean coefficient vector, $\widehat{c}_m^{(w)} = \bigl(D_w \widehat{f}^{(w)}\bigr)_m.$ Writing $Q_m$ for the length of these dimension-wise vectors, the coefficient–domain error is $$
+\mathrm{MSE}_{\mathrm{coef}}(w)
+=
+\frac{1}{\sum_{m=1}^{M} Q_m}
+\sum_{m=1}^{M}\sum_{r=1}^{Q_m}
+\Bigl(\bar{c}_{m,r}^{(w)} - \widehat{c}_{m,r}^{(w)}\Bigr)^2.
+$$
+
+Sparsity is computed using the detail coefficient indicators. Writing $\gamma^{(w)}_{j\ell} \in \{0,1\}$ for the last sampled inclusion indicator at level $j$ and location $\ell$, let $\mathcal{D}$ be the set of all detail indices and define $$
+\mathrm{Sparsity}(w)
+=
+\frac{1}{|\mathcal{D}|}\sum_{(j,\ell)\in \mathcal{D}} \mathbb{I}\{\gamma^{(w)}_{j\ell}=0\}.
+$$ This is the fraction of inactive detail coefficients. Given nonnegative weights $\alpha_{\mathrm{fun}}, \alpha_{\mathrm{coef}}, \alpha_{\mathrm{spr}}$, the score used for selection is $$
+\mathcal{L}(w)
+=
+\alpha_{\mathrm{fun}}\,\mathrm{MSE}_{\mathrm{fun}}(w)
++
+\alpha_{\mathrm{coef}}\,\mathrm{MSE}_{\mathrm{coef}}(w)
++
+\alpha_{\mathrm{spr}}\,\bigl(1 - \mathrm{Sparsity}(w)\bigr),
+$$ and the selected wavelet is $$
+w^{\ast} = \arg\min_{w \in \mathcal{W}} \mathcal{L}(w).
+$$
+
+```{julia}
+#| label: select-wavelet-asphalt
+#| depends-on: load-asphalt
+
+# Reveal 15% of normals for wavelet selection
+normal_indices = findall(==(normal_class), y_full)
+n_revealed = max(1, round(Int, 0.15 * length(normal_indices)))
+revealed_subset = sample(normal_indices, n_revealed, replace=false)
+revealed_idx = sort(revealed_subset)
+
+# Convert to vector format for wavelet selection
+Y_vec = [X[i, :] for i in 1:size(X, 1)]
+Y_mats = [reshape(Float64.(Yi), :, 1) for Yi in Y_vec]
+
+sel = WICMAD.KernelSelection.select_wavelet(Y_mats, t, revealed_idx;
+            wf_candidates = nothing, J = nothing, boundary = "periodic",
+            mcmc = (n_iter=3000, burnin=1000, thin=1),
+            verbose = false)
+selected_wf = sel.selected_wf;
+```
+
+```{julia}
+#| label: run-wicmad-asphalt
+#| depends-on: select-wavelet-asphalt
+
+Y_raw = [reshape(X[i, :], :, 1) for i in 1:size(X, 1)]
+
+# Reset seed for reproducibility
+Random.seed!(42)
+
+res_asphalt = wicmad(Y_raw, t;
+    n_iter=5000,
+    burn=2000,
+    thin=1,
+    wf=selected_wf,
+    diagnostics=true,
+    bootstrap_runs=0,
+    revealed_idx=revealed_idx,
+    verbose=false,
+)
+
+# Compute MAP estimate
+mapr_asphalt = map_from_res(res_asphalt)
+z_final_asphalt = mapr_asphalt.z_hat
+ari_asphalt = WICMAD.adj_rand_index(z_final_asphalt, z_true)
+
+# Evaluate performance
+pred_bin_asphalt = to_binary_labels(z_final_asphalt);
+```
+
+```{julia}
+#| label: plot-asphalt
+#| depends-on: run-wicmad-asphalt
+#| fig-width: 12
+#| fig-height: 4
+
+# Create side-by-side before/after comparison plot
+p_asphalt = WICMAD.Plotting.plot_clustering_comparison(
+    Y_raw, gt_binary, pred_bin_asphalt, t;
+    save_path=nothing
+)
+plot!(p_asphalt, plot_title="Asphalt Regularity", plot_titlefontsize=16)
+p_asphalt
+```
+
+```{julia}
+#| label: conf-asphalt
+#| depends-on: plot-asphalt
+#| echo: true
+
+confusion_matrix("Asphalt Regularity", gt_binary, pred_bin_asphalt)
+```
+
+## Dataset 2: CharacterTrajectories
+
+The Character Trajectories dataset is a multivariate functional dataset containing 2858 character samples. The three dimensions recorded are the x coordinates, y coordinates, and pen tip force. Data come pre-smoothed and were captured at 200 hertz. The data have a class for each letter in the alphabet. For our example, we assumed the letter "a" to be the normal class and that the letter "b" as the anomalous class. All other classes were discarded.
+
+```{julia}
+#| label: load-character
+#| depends-on: imports, helper-functions
+
+# Reset seed for reproducibility (before data sampling)
+Random.seed!(42)
+
+# Ensure data_dir is available
+data_dir = joinpath(dirname(@__DIR__), "data")
+
+ds_char = WICMAD.Utils.load_ucr_dataset("CharacterTrajectories/CharacterTrajectories", data_dir)
+
+# Select normal and anomaly classes
+normal_class_char = "1"  # Corresponds to 'a'
+cm_char = countmap(ds_char.labels)
+classes_sorted_char = sort(collect(keys(cm_char)); by = c -> -cm_char[c])
+other_classes = filter(c -> c != normal_class_char, classes_sorted_char)
+anomaly_class_char = isempty(other_classes) ? error("No other classes found") : other_classes[1]
+
+normal_indices_full_char = findall(==(normal_class_char), ds_char.labels)
+anomaly_indices_full_char = findall(==(anomaly_class_char), ds_char.labels)
+
+# Target anomaly proportion: 15%
+p_anom = 0.15
+p_normal = 0.85
+
+avail_norm_char = length(normal_indices_full_char)
+avail_anom_char = length(anomaly_indices_full_char)
+
+n_normal_used_char = avail_norm_char
+n_anomaly_needed = round(Int, n_normal_used_char * p_anom / p_normal)
+n_anomaly_used_char = min(avail_anom_char, n_anomaly_needed)
+
+if n_anomaly_used_char < n_anomaly_needed
+    n_normal_used_char = min(avail_norm_char, round(Int, n_anomaly_used_char * p_normal / p_anom))
+end
+
+used_normal_indices_char = sample(normal_indices_full_char, n_normal_used_char, replace=false)
+used_anomaly_indices_char = sample(anomaly_indices_full_char, n_anomaly_used_char, replace=false)
+all_used_indices_char = vcat(used_normal_indices_char, used_anomaly_indices_char)
+shuffle!(all_used_indices_char)
+
+# Subset data
+Y_full_char = ds_char.series[all_used_indices_char]
+y_full_char = [ds_char.labels[i] for i in all_used_indices_char]
+
+# Interpolate
+Y_interp_char, P_char = interpolate_to_length(Y_full_char; target_len=32)
+t_char = collect(1:P_char)
+
+# Ground-truth labels
+gt_binary_char = [yi == normal_class_char ? 0 : 1 for yi in y_full_char]
+z_true_char = relabel_consecutive(y_full_char);
+```
+
+```{julia}
+#| label: run-wicmad-character
+#| depends-on: load-character
+
+# Wavelet selection
+normal_indices_char = findall(==(normal_class_char), y_full_char)
+n_revealed_char = max(1, round(Int, 0.15 * length(normal_indices_char)))
+revealed_subset_char = sample(normal_indices_char, n_revealed_char, replace=false)
+revealed_idx_char = sort(revealed_subset_char)
+
+if !isempty(revealed_idx_char)
+    try
+        sel_char = WICMAD.KernelSelection.select_wavelet(Y_interp_char, t_char, revealed_idx_char;
+            wf_candidates = nothing, J = nothing, boundary = "periodic",
+            mcmc = (n_iter=3000, burnin=1000, thin=1),
+            verbose = false)
+        selected_wf_char = sel_char.selected_wf
+    catch
+        selected_wf_char = "sym8"
+    end
+else
+    selected_wf_char = "sym8"
+end
+
+# Run WICMAD
+# Reset seed for reproducibility
+Random.seed!(42)
+
+res_char = wicmad(Y_interp_char, t_char;
+    n_iter=5000,
+    burn=2000,
+    thin=1,
+    wf=selected_wf_char,
+    diagnostics=true,
+    bootstrap_runs=0,
+    revealed_idx=revealed_idx_char,
+    verbose=false,
+)
+
+# Compute MAP estimate
+mapr_char = map_from_res(res_char)
+z_final_char = mapr_char.z_hat
+ari_char = WICMAD.adj_rand_index(z_final_char, z_true_char)
+
+# Evaluate performance
+pred_bin_char = to_binary_labels(z_final_char);
+```
+
+```{julia}
+#| label: plot-character
+#| depends-on: run-wicmad-character
+#| fig-width: 12
+#| fig-height: 12
+
+# Create side-by-side before/after comparison plot
+p_char = WICMAD.Plotting.plot_clustering_comparison(
+    Y_interp_char, gt_binary_char, pred_bin_char, t_char;
+    save_path=nothing
+)
+plot!(p_char, plot_title="Character Trajectories", plot_titlefontsize=16)
+p_char
+```
+
+```{julia}
+#| label: conf-character
+#| depends-on: plot-character
+#| echo: true
+#| 
+confusion_matrix("Character Trajectories", gt_binary_char, pred_bin_char)
+```
+
+# Discussion
+
+The above examples demonstrate that the model generalizes well to real-world data. We achieve high recall at the cost of some precision, resulting in a competitive F1 score for an anomaly detection model.
+
+The Character Trajectores dataset represents ideal data for our model. They are smooth sensor data that are mostly stationary. Unsurprisingly, our model achieves perfect classification performance across all metrics. We further expect this, as these data contain shape anomalies, which our model was shown to detect easily in our simulated experiments.
+
+The Asphalt Regularity data proved to be more challenging. Here, the model attained a high recall, but a weaker precision. These data are far less smooth than the previous dataset, and thus, the Gaussian Process assumption is less appropriate. However, we showcased this example as we wished to investigate our model's performance on less ideal data. We found that we nearly identified all anomalous observations at the cost of some false positives. We find this trade-off to be acceptable, as in most anomaly detection settings, false positives are less detrimental than a missed anomaly.

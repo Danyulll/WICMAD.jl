@@ -439,9 +439,14 @@ end
 function read_ts_file(path::AbstractString)
     lines = readlines(path)
     isempty(lines) && error("$(path) appears to be empty")
-    idx = findfirst(l -> startswith(lowercase(strip(l)), "@data"), lines)
+    # Look for @data on its own line (not @data@problemName)
+    idx = findfirst(l -> strip(lowercase(strip(l))) == "@data", lines)
+    if idx === nothing
+        # Fallback: look for any line starting with @data
+        idx = findfirst(l -> startswith(lowercase(strip(l)), "@data"), lines)
+    end
     idx === nothing && error("@data section not found in $(path)")
-    data_lines = [strip(l) for l in lines[idx+1:end] if !isempty(strip(l))]
+    data_lines = [strip(l) for l in lines[idx+1:end] if !isempty(strip(l)) && !startswith(lowercase(strip(l)), "@")]
     series = Vector{Matrix{Float64}}()
     labels = String[]
     for (ln, line) in enumerate(data_lines)
@@ -449,7 +454,23 @@ function read_ts_file(path::AbstractString)
         length(parts) >= 2 || error("Invalid line $(ln) in $(path): expected at least one dimension and a label")
         dims = parts[1:end-1]
         label = strip(parts[end])
-        dim_vals = [parse.(Float64, filter(!isempty, split(strip(dim), ","))) for dim in dims]
+        # Parse dimensions, handling "?" as missing values (NaN)
+        dim_vals = []
+        for dim in dims
+            vals = split(strip(dim), ",")
+            parsed_vals = Float64[]
+            for val in vals
+                val = strip(val)
+                if isempty(val)
+                    continue
+                elseif val == "?" || lowercase(val) == "nan"
+                    push!(parsed_vals, NaN)
+                else
+                    push!(parsed_vals, parse(Float64, val))
+                end
+            end
+            push!(dim_vals, parsed_vals)
+        end
         lengths = length.(dim_vals)
         all(lengths .== lengths[1]) || error("Inconsistent dimension lengths in line $(ln) of $(path)")
         n_time = lengths[1]
