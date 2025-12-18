@@ -244,25 +244,6 @@ function compute_fdepth_rpd(Y_list, t, y_true)
     end
 end
 
-function compute_fdepth_kfsd(Y_list, t, y_true)
-    try
-        data_matrix = prepare_r_data(Y_list, t)
-        @rput data_matrix t
-        R"""
-        library(fda.usc)
-        fdata_obj <- fdata(data_matrix, argvals = t, rangeval = range(t))
-        depth_result <- depth.KFSD(fdata_obj, trim = 0.1, h = NULL, scale = FALSE, draw = FALSE)
-        depth_vals <- depth_result$dep
-        """
-        depth_vals = @rget depth_vals
-        anomaly_scores = 1.0 .- depth_vals
-        return find_best_f1_threshold(anomaly_scores, y_true)
-    catch e
-        @warn "depth.KFSD failed: $e"
-        return nothing
-    end
-end
-
 function compute_fdepth_mode(Y_list, t, y_true)
     try
         data_matrix = prepare_r_data(Y_list, t)
@@ -297,25 +278,6 @@ function compute_fdepth_rp(Y_list, t, y_true)
         return find_best_f1_threshold(anomaly_scores, y_true)
     catch e
         @warn "depth.RP failed: $e"
-        return nothing
-    end
-end
-
-function compute_fdepth_fsd(Y_list, t, y_true)
-    try
-        data_matrix = prepare_r_data(Y_list, t)
-        @rput data_matrix t
-        R"""
-        library(fda.usc)
-        fdata_obj <- fdata(data_matrix, argvals = t, rangeval = range(t))
-        depth_result <- depth.FSD(fdata_obj, trim = 0.1, scale = FALSE, draw = FALSE)
-        depth_vals <- depth_result$dep
-        """
-        depth_vals = @rget depth_vals
-        anomaly_scores = 1.0 .- depth_vals
-        return find_best_f1_threshold(anomaly_scores, y_true)
-    catch e
-        @warn "depth.FSD failed: $e"
         return nothing
     end
 end
@@ -518,8 +480,6 @@ function run_all_depth_methods(Y_list, t, y_true; is_multivariate=false)
         methods["depth.RT"] = compute_fdepth_rt(Y_list, t, y_true)
         methods["depth.RP"] = compute_fdepth_rp(Y_list, t, y_true)
         methods["depth.RPD"] = compute_fdepth_rpd(Y_list, t, y_true)
-        methods["depth.FSD"] = compute_fdepth_fsd(Y_list, t, y_true)
-        methods["depth.KFSD"] = compute_fdepth_kfsd(Y_list, t, y_true)
     end
     
     return methods
@@ -571,8 +531,7 @@ function run_simulated_experiment(anomaly_type, dataset_name; is_multivariate=fa
     if is_multivariate_data
         depth_method_names = ["depth.FMp", "depth.RPp", "mrfDepth.fOutl", "fdaoutlier.msplot"]
     else
-        depth_method_names = ["depth.FM", "depth.mode", "depth.RT", "depth.RP", "depth.RPD",
-                              "depth.FSD", "depth.KFSD"]
+        depth_method_names = ["depth.FM", "depth.mode", "depth.RT", "depth.RP", "depth.RPD"]
     end
     for method in depth_method_names
         all_metrics_depths[method] = []

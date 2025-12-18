@@ -97,9 +97,13 @@ println("Setting up R environment...")
 R"""
 if (!require("fda.usc", quietly = TRUE)) {
     install.packages("fda.usc", repos = "https://cloud.r-project.org")
-    library(fda.usc)
 }
+library(fda.usc)
 """
+println("R environment initialized. Testing R connection...")
+# Test R connection with a simple call
+R"cat('R is ready. fda.usc version:', as.character(packageVersion('fda.usc')), '\n')"
+println("R setup complete.")
 
 # Function to find threshold that maximizes F1 score
 function find_best_f1_threshold(scores, y_true)
@@ -170,10 +174,11 @@ function compute_fdepth_fm(Y_list, t, y_true)
         data_matrix = prepare_r_data(Y_list, t)
         @rput data_matrix t
         R"""
-        library(fda.usc)
+        cat("[R] Starting depth.FM...\n")
         fdata_obj <- fdata(data_matrix, argvals = t, rangeval = range(t))
         depth_result <- depth.FM(fdata_obj, trim = 0.1, dfunc = "FM1", par.dfunc = list(scale = TRUE), draw = FALSE)
         depth_vals <- depth_result$dep
+        cat("[R] depth.FM completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -189,10 +194,11 @@ function compute_fdepth_rt(Y_list, t, y_true)
         data_matrix = prepare_r_data(Y_list, t)
         @rput data_matrix t
         R"""
-        library(fda.usc)
+        cat("[R] Starting depth.RT...\n")
         fdata_obj <- fdata(data_matrix, argvals = t, rangeval = range(t))
         depth_result <- depth.RT(fdata_obj, trim = 0.1, nproj = 50, proj = "vexponential", draw = FALSE)
         depth_vals <- depth_result$dep
+        cat("[R] depth.RT completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -208,10 +214,11 @@ function compute_fdepth_rpd(Y_list, t, y_true)
         data_matrix = prepare_r_data(Y_list, t)
         @rput data_matrix t
         R"""
-        library(fda.usc)
+        cat("[R] Starting depth.RPD...\n")
         fdata_obj <- fdata(data_matrix, argvals = t, rangeval = range(t))
         depth_result <- depth.RPD(fdata_obj, deriv = c(0, 1), dfunc2 = mdepth.LD, trim = 0.1, draw = FALSE)
         depth_vals <- depth_result$dep
+        cat("[R] depth.RPD completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -222,34 +229,16 @@ function compute_fdepth_rpd(Y_list, t, y_true)
     end
 end
 
-function compute_fdepth_kfsd(Y_list, t, y_true)
-    try
-        data_matrix = prepare_r_data(Y_list, t)
-        @rput data_matrix t
-        R"""
-        library(fda.usc)
-        fdata_obj <- fdata(data_matrix, argvals = t, rangeval = range(t))
-        depth_result <- depth.KFSD(fdata_obj, trim = 0.1, h = NULL, scale = FALSE, draw = FALSE)
-        depth_vals <- depth_result$dep
-        """
-        depth_vals = @rget depth_vals
-        anomaly_scores = 1.0 .- depth_vals
-        return find_best_f1_threshold(anomaly_scores, y_true)
-    catch e
-        @warn "depth.KFSD failed: $e"
-        return nothing
-    end
-end
-
 function compute_fdepth_mode(Y_list, t, y_true)
     try
         data_matrix = prepare_r_data(Y_list, t)
         @rput data_matrix t
         R"""
-        library(fda.usc)
+        cat("[R] Starting depth.mode...\n")
         fdata_obj <- fdata(data_matrix, argvals = t, rangeval = range(t))
         depth_result <- depth.mode(fdata_obj, trim = 0.1, h = NULL, metric = metric.lp, draw = FALSE)
         depth_vals <- depth_result$dep
+        cat("[R] depth.mode completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -265,10 +254,11 @@ function compute_fdepth_rp(Y_list, t, y_true)
         data_matrix = prepare_r_data(Y_list, t)
         @rput data_matrix t
         R"""
-        library(fda.usc)
+        cat("[R] Starting depth.RP...\n")
         fdata_obj <- fdata(data_matrix, argvals = t, rangeval = range(t))
         depth_result <- depth.RP(fdata_obj, trim = 0.1, nproj = 50, proj = "vexponential", draw = FALSE)
         depth_vals <- depth_result$dep
+        cat("[R] depth.RP completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -279,32 +269,13 @@ function compute_fdepth_rp(Y_list, t, y_true)
     end
 end
 
-function compute_fdepth_fsd(Y_list, t, y_true)
-    try
-        data_matrix = prepare_r_data(Y_list, t)
-        @rput data_matrix t
-        R"""
-        library(fda.usc)
-        fdata_obj <- fdata(data_matrix, argvals = t, rangeval = range(t))
-        depth_result <- depth.FSD(fdata_obj, trim = 0.1, scale = FALSE, draw = FALSE)
-        depth_vals <- depth_result$dep
-        """
-        depth_vals = @rget depth_vals
-        anomaly_scores = 1.0 .- depth_vals
-        return find_best_f1_threshold(anomaly_scores, y_true)
-    catch e
-        @warn "depth.FSD failed: $e"
-        return nothing
-    end
-end
-
 # Multivariate functional depth methods (for M > 1)
 function compute_fdepth_fmp(Y_list, t, y_true)
     try
         data_array = prepare_r_mfdata(Y_list, t)
         @rput data_array t
         R"""
-        library(fda.usc)
+        cat("[R] Starting depth.FMp...\n")
         n <- dim(data_array)[1]
         m <- dim(data_array)[2]
         p <- dim(data_array)[3]
@@ -324,6 +295,7 @@ function compute_fdepth_fmp(Y_list, t, y_true)
         mf <- do.call(mfdata, X_list)
         depth_result <- depth.FMp(mf)
         depth_vals <- depth_result$dep
+        cat("[R] depth.FMp completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -339,7 +311,7 @@ function compute_fdepth_modep(Y_list, t, y_true)
         data_array = prepare_r_mfdata(Y_list, t)
         @rput data_array t
         R"""
-        library(fda.usc)
+        cat("[R] Starting depth.modep...\n")
         n <- dim(data_array)[1]
         m <- dim(data_array)[2]
         p <- dim(data_array)[3]
@@ -359,6 +331,7 @@ function compute_fdepth_modep(Y_list, t, y_true)
         mf <- do.call(mfdata, X_list)
         depth_result <- depth.modep(mf)
         depth_vals <- depth_result$dep
+        cat("[R] depth.modep completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -374,7 +347,7 @@ function compute_fdepth_rpp(Y_list, t, y_true)
         data_array = prepare_r_mfdata(Y_list, t)
         @rput data_array t
         R"""
-        library(fda.usc)
+        cat("[R] Starting depth.RPp...\n")
         n <- dim(data_array)[1]
         m <- dim(data_array)[2]
         p <- dim(data_array)[3]
@@ -394,6 +367,7 @@ function compute_fdepth_rpp(Y_list, t, y_true)
         mf <- do.call(mfdata, X_list)
         depth_result <- depth.RPp(mf)
         depth_vals <- depth_result$dep
+        cat("[R] depth.RPp completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -422,8 +396,6 @@ function run_all_depth_methods(Y_list, t, y_true; is_multivariate=false)
         methods["depth.RT"] = compute_fdepth_rt(Y_list, t, y_true)
         methods["depth.RP"] = compute_fdepth_rp(Y_list, t, y_true)
         methods["depth.RPD"] = compute_fdepth_rpd(Y_list, t, y_true)
-        methods["depth.FSD"] = compute_fdepth_fsd(Y_list, t, y_true)
-        methods["depth.KFSD"] = compute_fdepth_kfsd(Y_list, t, y_true)
     end
     
     return methods
@@ -476,8 +448,7 @@ function run_simulated_experiment(anomaly_type, dataset_name; is_multivariate=fa
     if is_multivariate_data
         depth_method_names = ["depth.FMp", "depth.modep", "depth.RPp"]
     else
-        depth_method_names = ["depth.FM", "depth.mode", "depth.RT", "depth.RP", "depth.RPD",
-                              "depth.FSD", "depth.KFSD"]
+        depth_method_names = ["depth.FM", "depth.mode", "depth.RT", "depth.RP", "depth.RPD"]
     end
     for method in depth_method_names
         all_metrics_depths[method] = []
@@ -517,6 +488,7 @@ function run_simulated_experiment(anomaly_type, dataset_name; is_multivariate=fa
         end
         
         # Run WICMAD on raw data
+        println("  Functional depths computed. Starting WICMAD (raw data)...")
         normal_indices = findall(==(0), data_mc.y_true)
         revealed_idx = sort(sample(normal_indices, max(1, round(Int, 0.15 * length(normal_indices))), replace=false))
         
@@ -548,6 +520,7 @@ function run_simulated_experiment(anomaly_type, dataset_name; is_multivariate=fa
         
         # Run WICMAD on derivative-augmented data (3 channels: raw, d1, d2)
         # derivatives_transform converts univariate (P×1) to multivariate (P×3)
+        println("  Starting WICMAD (derivative-augmented data)...")
         Y_deriv = derivatives_transform(data_mc.Y_list, data_mc.t)
         
         # Wavelet selection for derivative-augmented data
