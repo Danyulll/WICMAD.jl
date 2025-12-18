@@ -2,7 +2,7 @@
 
 julia_version = "1.11.3"
 manifest_format = "2.0"
-project_hash = "436ba33213dc77e795f664110486fa8493c771e3"
+project_hash = "78f03aa52c4f3bab4425118a58aebf0b9e23a6fe"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -511,6 +511,18 @@ version = "1.2.0"
     JSONArrowExt = ["ArrowTypes"]
 
     [deps.JSON.weakdeps]
+    ArrowTypes = "31f734f8-188a-4ce0-8406-c8a06bd891cd"
+
+[[deps.JSON3]]
+deps = ["Dates", "Mmap", "Parsers", "PrecompileTools", "StructTypes", "UUIDs"]
+git-tree-sha1 = "411eccfe8aba0814ffa0fdf4860913ed09c34975"
+uuid = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+version = "1.14.3"
+
+    [deps.JSON3.extensions]
+    JSON3ArrowExt = ["ArrowTypes"]
+
+    [deps.JSON3.weakdeps]
     ArrowTypes = "31f734f8-188a-4ce0-8406-c8a06bd891cd"
 
 [[deps.JpegTurbo_jll]]
@@ -1137,6 +1149,12 @@ git-tree-sha1 = "725421ae8e530ec29bcbdddbe91ff8053421d023"
 uuid = "892a3eda-7b42-436c-8928-eab12a02cf0e"
 version = "0.4.1"
 
+[[deps.StructTypes]]
+deps = ["Dates", "UUIDs"]
+git-tree-sha1 = "159331b30e94d7b11379037feeb9b690950cace8"
+uuid = "856f2bd8-1eba-4b0a-8007-ebc267875bd4"
+version = "1.11.0"
+
 [[deps.StructUtils]]
 deps = ["Dates", "UUIDs"]
 git-tree-sha1 = "cd47aa083c9c7bdeb7b92de26deb46d6a33163c9"
@@ -1405,6 +1423,20 @@ deps = ["Artifacts", "JLLWrappers", "Libdl"]
 git-tree-sha1 = "a63799ff68005991f9d9491b6e95bd3478d783cb"
 uuid = "c5fb5394-a638-5e4d-96e5-b29de1b5cf10"
 version = "1.6.0+0"
+
+[[deps.YFinance]]
+deps = ["Base64", "Dates", "HTTP", "JSON3", "OrderedCollections", "PrecompileTools", "Random"]
+git-tree-sha1 = "13caf26019a68f963859039555394b5b91d30ca0"
+uuid = "e4b3b0a2-f9a3-42f3-aabb-32142cceaf77"
+version = "0.1.10"
+
+    [deps.YFinance.extensions]
+    YFinance_TSFrames = "TSFrames"
+    YFinance_TimeSeries = "TimeSeries"
+
+    [deps.YFinance.weakdeps]
+    TSFrames = "9f90e835-9451-4aaa-bcb1-743a1b8d2f84"
+    TimeSeries = "9e3dc215-6440-5c97-bce1-76c03772f85e"
 
 [[deps.Zlib_jll]]
 deps = ["Libdl"]

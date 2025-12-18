@@ -18,7 +18,7 @@ plots_dir = joinpath(dirname(@__DIR__), "plots")
 isdir(plots_dir) || mkpath(plots_dir)
 
 # Include simulation core to get dataset generation functions
-include(joinpath(dirname(@__DIR__), "simulation", "sim_core.jl"))
+include(joinpath(dirname(@__DIR__), "src", "sim_core.jl"))
 
 # ============================================================================
 # UTILITY FUNCTIONS

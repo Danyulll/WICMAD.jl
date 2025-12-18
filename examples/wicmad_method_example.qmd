@@ -325,6 +325,10 @@ function confusion_matrix(name::AbstractString, ytrue::Vector{Int}, ypred::Vecto
 end;
 ```
 
+## Example FAD Dataset
+
+To illustrate the functional anomaly detection problem, we generate a synthetic univariate functional dataset with a 15% anomaly rate. The plot demonstrates the typical structure of such data, where anomalies (red) deviate from the normal pattern (blue). See `example_fad_dataset.jl` for the code to generate this plot.
+
 ## Dataset 1: AsphaltRegularity
 
 The Asphalt Regularity dataset contains accelerometer data recorded on a smartphone as a car drove over a cobblestone street and a dirt road. The x, y, and z accelerations were recorded and combined into an acceleration magnitude value, resulting in a univariate functional dataset.
