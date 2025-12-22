@@ -551,8 +551,18 @@ function run_simulated_experiment(anomaly_type, dataset_name; is_multivariate=fa
         ))
     end
     
-    # Display median metrics for WICMAD (raw)
+    # Compute and display mean and median metrics for WICMAD (raw)
     if !isempty(all_metrics_wicmad)
+        mean_metrics_wicmad = (
+            precision = mean([m.precision for m in all_metrics_wicmad]),
+            recall = mean([m.recall for m in all_metrics_wicmad]),
+            f1 = mean([m.f1 for m in all_metrics_wicmad]),
+            accuracy = mean([m.accuracy for m in all_metrics_wicmad]),
+            tp = round(Int, mean([m.tp for m in all_metrics_wicmad])),
+            tn = round(Int, mean([m.tn for m in all_metrics_wicmad])),
+            fp = round(Int, mean([m.fp for m in all_metrics_wicmad])),
+            fn = round(Int, mean([m.fn for m in all_metrics_wicmad]))
+        )
         median_metrics_wicmad = (
             precision = median([m.precision for m in all_metrics_wicmad]),
             recall = median([m.recall for m in all_metrics_wicmad]),
@@ -563,11 +573,22 @@ function run_simulated_experiment(anomaly_type, dataset_name; is_multivariate=fa
             fp = round(Int, median([m.fp for m in all_metrics_wicmad])),
             fn = round(Int, median([m.fn for m in all_metrics_wicmad]))
         )
+        print_metrics("WICMAD (raw) - $dataset_name [Mean over $mc_trials MC]", mean_metrics_wicmad)
         print_metrics("WICMAD (raw) - $dataset_name [Median over $mc_trials MC]", median_metrics_wicmad)
     end
     
-    # Display median metrics for WICMAD (derivative-augmented)
+    # Compute and display mean and median metrics for WICMAD (derivative-augmented)
     if !isempty(all_metrics_wicmad_deriv)
+        mean_metrics_wicmad_deriv = (
+            precision = mean([m.precision for m in all_metrics_wicmad_deriv]),
+            recall = mean([m.recall for m in all_metrics_wicmad_deriv]),
+            f1 = mean([m.f1 for m in all_metrics_wicmad_deriv]),
+            accuracy = mean([m.accuracy for m in all_metrics_wicmad_deriv]),
+            tp = round(Int, mean([m.tp for m in all_metrics_wicmad_deriv])),
+            tn = round(Int, mean([m.tn for m in all_metrics_wicmad_deriv])),
+            fp = round(Int, mean([m.fp for m in all_metrics_wicmad_deriv])),
+            fn = round(Int, mean([m.fn for m in all_metrics_wicmad_deriv]))
+        )
         median_metrics_wicmad_deriv = (
             precision = median([m.precision for m in all_metrics_wicmad_deriv]),
             recall = median([m.recall for m in all_metrics_wicmad_deriv]),
@@ -578,16 +599,28 @@ function run_simulated_experiment(anomaly_type, dataset_name; is_multivariate=fa
             fp = round(Int, median([m.fp for m in all_metrics_wicmad_deriv])),
             fn = round(Int, median([m.fn for m in all_metrics_wicmad_deriv]))
         )
+        print_metrics("WICMAD (deriv) - $dataset_name [Mean over $mc_trials MC]", mean_metrics_wicmad_deriv)
         print_metrics("WICMAD (deriv) - $dataset_name [Median over $mc_trials MC]", median_metrics_wicmad_deriv)
     end
     
-    # Display median metrics for each depth method
+    # Compute and display mean and median metrics for each depth method
     println("\n" * "="^70)
-    println("Functional Depth Methods - $dataset_name [Median over $mc_trials MC]")
+    println("Functional Depth Methods - $dataset_name [Mean/Median over $mc_trials MC]")
     println("="^70)
+    summary_rows = []
     for method_name in depth_method_names
         if !isempty(all_metrics_depths[method_name])
             metrics_list = all_metrics_depths[method_name]
+            mean_m = (
+                precision = mean([m.precision for m in metrics_list]),
+                recall = mean([m.recall for m in metrics_list]),
+                f1 = mean([m.f1 for m in metrics_list]),
+                accuracy = mean([m.accuracy for m in metrics_list]),
+                tp = round(Int, mean([m.tp for m in metrics_list])),
+                tn = round(Int, mean([m.tn for m in metrics_list])),
+                fp = round(Int, mean([m.fp for m in metrics_list])),
+                fn = round(Int, mean([m.fn for m in metrics_list]))
+            )
             median_m = (
                 precision = median([m.precision for m in metrics_list]),
                 recall = median([m.recall for m in metrics_list]),
@@ -598,19 +631,117 @@ function run_simulated_experiment(anomaly_type, dataset_name; is_multivariate=fa
                 fp = round(Int, median([m.fp for m in metrics_list])),
                 fn = round(Int, median([m.fn for m in metrics_list]))
             )
-            print_metrics(method_name, median_m)
+            print_metrics("$method_name [Mean]", mean_m)
+            print_metrics("$method_name [Median]", median_m)
+            
+            # Store summary metrics
+            push!(summary_rows, (;
+                method = method_name,
+                variant = "raw",
+                statistic = "mean",
+                precision = mean_m.precision,
+                recall = mean_m.recall,
+                f1 = mean_m.f1,
+                accuracy = mean_m.accuracy,
+                tp = mean_m.tp,
+                tn = mean_m.tn,
+                fp = mean_m.fp,
+                fn = mean_m.fn
+            ))
+            push!(summary_rows, (;
+                method = method_name,
+                variant = "raw",
+                statistic = "median",
+                precision = median_m.precision,
+                recall = median_m.recall,
+                f1 = median_m.f1,
+                accuracy = median_m.accuracy,
+                tp = median_m.tp,
+                tn = median_m.tn,
+                fp = median_m.fp,
+                fn = median_m.fn
+            ))
         end
     end
     
-    # Save results to CSV
+    # Add WICMAD summaries
+    if !isempty(all_metrics_wicmad)
+        push!(summary_rows, (;
+            method = "WICMAD",
+            variant = "raw",
+            statistic = "mean",
+            precision = mean_metrics_wicmad.precision,
+            recall = mean_metrics_wicmad.recall,
+            f1 = mean_metrics_wicmad.f1,
+            accuracy = mean_metrics_wicmad.accuracy,
+            tp = mean_metrics_wicmad.tp,
+            tn = mean_metrics_wicmad.tn,
+            fp = mean_metrics_wicmad.fp,
+            fn = mean_metrics_wicmad.fn
+        ))
+        push!(summary_rows, (;
+            method = "WICMAD",
+            variant = "raw",
+            statistic = "median",
+            precision = median_metrics_wicmad.precision,
+            recall = median_metrics_wicmad.recall,
+            f1 = median_metrics_wicmad.f1,
+            accuracy = median_metrics_wicmad.accuracy,
+            tp = median_metrics_wicmad.tp,
+            tn = median_metrics_wicmad.tn,
+            fp = median_metrics_wicmad.fp,
+            fn = median_metrics_wicmad.fn
+        ))
+    end
+    if !isempty(all_metrics_wicmad_deriv)
+        push!(summary_rows, (;
+            method = "WICMAD",
+            variant = "deriv",
+            statistic = "mean",
+            precision = mean_metrics_wicmad_deriv.precision,
+            recall = mean_metrics_wicmad_deriv.recall,
+            f1 = mean_metrics_wicmad_deriv.f1,
+            accuracy = mean_metrics_wicmad_deriv.accuracy,
+            tp = mean_metrics_wicmad_deriv.tp,
+            tn = mean_metrics_wicmad_deriv.tn,
+            fp = mean_metrics_wicmad_deriv.fp,
+            fn = mean_metrics_wicmad_deriv.fn
+        ))
+        push!(summary_rows, (;
+            method = "WICMAD",
+            variant = "deriv",
+            statistic = "median",
+            precision = median_metrics_wicmad_deriv.precision,
+            recall = median_metrics_wicmad_deriv.recall,
+            f1 = median_metrics_wicmad_deriv.f1,
+            accuracy = median_metrics_wicmad_deriv.accuracy,
+            tp = median_metrics_wicmad_deriv.tp,
+            tn = median_metrics_wicmad_deriv.tn,
+            fp = median_metrics_wicmad_deriv.fp,
+            fn = median_metrics_wicmad_deriv.fn
+        ))
+    end
+    
+    # Save individual trial results to CSV
     if !isempty(csv_rows)
         df = DataFrame(csv_rows)
         results_dir = joinpath(project_root, "results")
         mkpath(results_dir)
         csv_path = joinpath(results_dir, "$(dataset_name)_results.csv")
         CSV.write(csv_path, df)
-        println("\nSaved results to CSV: $csv_path")
+        println("\nSaved individual trial results to CSV: $csv_path")
         println("  Total rows: $(nrow(df)) (one per MC trial per method)")
+    end
+    
+    # Save summary (mean/median) results to CSV
+    if !isempty(summary_rows)
+        df_summary = DataFrame(summary_rows)
+        results_dir = joinpath(project_root, "results")
+        mkpath(results_dir)
+        summary_csv_path = joinpath(results_dir, "$(dataset_name)_summary.csv")
+        CSV.write(summary_csv_path, df_summary)
+        println("Saved summary (mean/median) results to CSV: $summary_csv_path")
+        println("  Total rows: $(nrow(df_summary)) (one per method per statistic)")
     end
     
     # Plot clustering result

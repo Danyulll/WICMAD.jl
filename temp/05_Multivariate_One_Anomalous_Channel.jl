@@ -3,22 +3,53 @@
 # WICMAD: Multivariate One Anomalous Channel Experiment
 # This script runs WICMAD on the Multivariate One Anomalous Channel simulated dataset.
 
+println("="^70)
+println("[START] Script execution started")
+println("="^70)
+
+println("[1/10] Activating project...")
 using Pkg
 Pkg.activate(joinpath(@__DIR__, ".."))
+println("  ✓ Project activated")
+
+println("[2/10] Loading core packages...")
 using WICMAD, Random, Statistics, Printf
+println("  ✓ WICMAD, Random, Statistics, Printf loaded")
+
+println("[3/10] Loading StatsBase...")
 using StatsBase: countmap, sample, median, shuffle
+println("  ✓ StatsBase functions loaded")
+
+println("[4/10] Loading plotting and interpolation packages...")
 using Plots, Interpolations
+println("  ✓ Plots, Interpolations loaded")
+
+println("[5/10] Loading WICMAD PostProcessing...")
 using WICMAD.PostProcessing: map_from_res
+println("  ✓ PostProcessing loaded")
+
+println("[6/10] Loading remaining packages...")
 using ProgressMeter
 using RCall
 using DataFrames, CSV
+println("  ✓ ProgressMeter, RCall, DataFrames, CSV loaded")
 
+println("[7/10] Setting up plotting backend...")
 gr()
+println("  ✓ GR backend initialized")
+
+println("[8/10] Including sim_core.jl...")
 include(joinpath(@__DIR__, "..", "src", "sim_core.jl"))
+println("  ✓ sim_core.jl included")
+
+println("[9/10] Setting up project paths...")
 project_root = dirname(@__DIR__)
 mkpath(joinpath(project_root, "plots", "notebook_output"))
+println("  ✓ Project root: $project_root")
+println("  ✓ Output directories created")
 
 # Helper functions
+println("[10/10] Defining helper functions...")
 function largest_cluster(z)
     counts = countmap(z)
     return sort(collect(keys(counts)); by = k -> -counts[k])[1]
@@ -86,29 +117,61 @@ function print_metrics(name, m)
     println("="^70)
 end
 
-println("Helper functions loaded")
+println("  ✓ Helper functions defined")
+println("\n" * "="^70)
+println("Initial setup complete!")
+println("="^70)
 
 # ============================================================================
 # R Setup and Functional Data Depth Functions
 # ============================================================================
 
+println("\n[PHASE 2] Setting up R environment and depth functions...")
+println("  [2.1] Initializing R and installing/loading packages...")
+
 # Initialize R and install/load required packages
-println("Setting up R environment...")
+println("  [2.1.1] Checking/installing fda.usc package...")
 R"""
 if (!require("fda.usc", quietly = TRUE)) {
+    cat("[R] Installing fda.usc package...\n")
     install.packages("fda.usc", repos = "https://cloud.r-project.org")
-    library(fda.usc)
+    cat("[R] fda.usc installation complete.\n")
 }
-if (!require("mrfDepth", quietly = TRUE)) {
-    install.packages("mrfDepth", repos = "https://cloud.r-project.org")
-    library(mrfDepth)
-}
-if (!require("fdaoutlier", quietly = TRUE)) {
-    install.packages("fdaoutlier", repos = "https://cloud.r-project.org")
-    library(fdaoutlier)
-}
+cat("[R] Loading fda.usc library...\n")
+library(fda.usc)
+cat("[R] fda.usc library loaded.\n")
 """
+println("  ✓ fda.usc package ready")
 
+println("  [2.1.2] Checking/installing mrfDepth package...")
+R"""
+if (!require("mrfDepth", quietly = TRUE)) {
+    cat("[R] Installing mrfDepth package...\n")
+    install.packages("mrfDepth", repos = "https://cloud.r-project.org")
+    cat("[R] mrfDepth installation complete.\n")
+}
+cat("[R] Loading mrfDepth library...\n")
+library(mrfDepth)
+cat("[R] mrfDepth library loaded.\n")
+"""
+println("  ✓ mrfDepth package ready")
+
+println("  [2.1.3] Checking/installing fdaoutlier package...")
+R"""
+if (!require("fdaoutlier", quietly = TRUE)) {
+    cat("[R] Installing fdaoutlier package...\n")
+    install.packages("fdaoutlier", repos = "https://cloud.r-project.org")
+    cat("[R] fdaoutlier installation complete.\n")
+}
+cat("[R] Loading fdaoutlier library...\n")
+library(fdaoutlier)
+cat("[R] fdaoutlier library loaded.\n")
+"""
+println("  ✓ fdaoutlier package ready")
+println("  ✓ All R packages check/install completed")
+
+println("  [2.2] Defining depth computation functions...")
+println("    [2.2.1] Defining find_best_f1_threshold...")
 # Function to find threshold that maximizes F1 score
 function find_best_f1_threshold(scores, y_true)
     # Filter out NaN and Inf values
@@ -142,7 +205,9 @@ function find_best_f1_threshold(scores, y_true)
     
     return (; threshold=best_threshold, metrics=best_metrics)
 end
+println("      ✓ find_best_f1_threshold defined")
 
+println("    [2.2.2] Defining compute_metrics_from_binary...")
 # Helper to compute metrics from binary predictions
 function compute_metrics_from_binary(pred, y_true)
     tp = sum((y_true .== 1) .& (pred .== 1))
@@ -155,7 +220,9 @@ function compute_metrics_from_binary(pred, y_true)
     accuracy = (tp + tn) / length(y_true)
     return (; precision, recall, f1, accuracy, tp, tn, fp, fn)
 end
+println("      ✓ compute_metrics_from_binary defined")
 
+println("    [2.2.3] Defining data preparation functions...")
 # Convert Julia data to R format for functional depth computation
 function prepare_r_data(Y_list, t)
     N = length(Y_list)
@@ -186,6 +253,7 @@ function prepare_r_mfdata(Y_list, t)
     return data_array
 end
 
+println("    [2.2.4] Defining univariate depth computation functions...")
 # Compute functional depth using fda.usc methods
 function compute_fdepth_fm(Y_list, t, y_true)
     try
@@ -205,7 +273,7 @@ function compute_fdepth_fm(Y_list, t, y_true)
         return nothing
     end
 end
-
+println("      [2.2.4.2] compute_fdepth_rt...")
 function compute_fdepth_rt(Y_list, t, y_true)
     try
         data_matrix = prepare_r_data(Y_list, t)
@@ -224,7 +292,7 @@ function compute_fdepth_rt(Y_list, t, y_true)
         return nothing
     end
 end
-
+println("      [2.2.4.3] compute_fdepth_rpd...")
 function compute_fdepth_rpd(Y_list, t, y_true)
     try
         data_matrix = prepare_r_data(Y_list, t)
@@ -243,7 +311,7 @@ function compute_fdepth_rpd(Y_list, t, y_true)
         return nothing
     end
 end
-
+println("      [2.2.4.4] compute_fdepth_mode...")
 function compute_fdepth_mode(Y_list, t, y_true)
     try
         data_matrix = prepare_r_data(Y_list, t)
@@ -263,6 +331,7 @@ function compute_fdepth_mode(Y_list, t, y_true)
     end
 end
 
+println("      [2.2.4.5] compute_fdepth_rp...")
 function compute_fdepth_rp(Y_list, t, y_true)
     try
         data_matrix = prepare_r_data(Y_list, t)
@@ -281,13 +350,17 @@ function compute_fdepth_rp(Y_list, t, y_true)
         return nothing
     end
 end
+println("      ✓ Univariate depth functions defined")
 
+println("    [2.2.5] Defining multivariate depth computation functions...")
+println("      [2.2.5.1] compute_fdepth_fmp...")
 # Multivariate functional depth methods (for M > 1)
 function compute_fdepth_fmp(Y_list, t, y_true)
     try
         data_array = prepare_r_mfdata(Y_list, t)
         @rput data_array t
         R"""
+        cat("[R] Starting depth.FMp...\n")
         library(fda.usc)
         # data_array dimensions: [N observations, P time points, M channels]
         n_obs <- dim(data_array)[1]      # N: number of observations
@@ -327,6 +400,7 @@ function compute_fdepth_fmp(Y_list, t, y_true)
         mf <- do.call(mfdata, X_list)
         depth_result <- depth.FMp(mf)
         depth_vals <- depth_result$dep
+        cat("[R] depth.FMp completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -342,6 +416,7 @@ function compute_fdepth_rpp(Y_list, t, y_true)
         data_array = prepare_r_mfdata(Y_list, t)
         @rput data_array t
         R"""
+        cat("[R] Starting depth.RPp...\n")
         library(fda.usc)
         # data_array dimensions: [N observations, P time points, M channels]
         n_obs <- dim(data_array)[1]      # N: number of observations
@@ -370,6 +445,7 @@ function compute_fdepth_rpp(Y_list, t, y_true)
         mf <- do.call(mfdata, X_list)
         depth_result <- depth.RPp(mf)
         depth_vals <- depth_result$dep
+        cat("[R] depth.RPp completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -379,7 +455,7 @@ function compute_fdepth_rpp(Y_list, t, y_true)
         return nothing
     end
 end
-
+println("      [2.2.5.3] compute_fdepth_mrfDepth...")
 # mrfDepth: functional outlyingness using fOutl() as feature generator
 # Expects array with dimensions (time, curves, components) = (P, N, M)
 # Uses fOutlyingnessX as scores and F1-optimal cutoff selection
@@ -392,6 +468,7 @@ function compute_fdepth_mrfDepth(Y_list, t, y_true)
         data_array_transposed = permutedims(data_array, (2, 1, 3))  # (P, N, M)
         @rput data_array_transposed t
         R"""
+        cat("[R] Starting mrfDepth.fOutl...\n")
         library(mrfDepth)
         
         # data_array_transposed dimensions: [P time, N curves, M components]
@@ -415,6 +492,7 @@ function compute_fdepth_mrfDepth(Y_list, t, y_true)
         }
         
         anomaly_scores <- as.numeric(res$fOutlyingnessX)
+        cat("[R] mrfDepth.fOutl completed.\n")
         """
         anomaly_scores = @rget anomaly_scores
         # Ensure we got a valid vector
@@ -429,7 +507,7 @@ function compute_fdepth_mrfDepth(Y_list, t, y_true)
         return nothing
     end
 end
-
+println("      [2.2.5.4] compute_fdepth_fdaoutlier...")
 # fdaoutlier: MS-plot based multivariate functional outlier detection
 # Expects array with dimensions (curves, time, components) = (N, P, M)
 function compute_fdepth_fdaoutlier(Y_list, t, y_true)
@@ -439,6 +517,7 @@ function compute_fdepth_fdaoutlier(Y_list, t, y_true)
         # Our data_array is already (N, P, M), so no transpose needed
         @rput data_array
         R"""
+        cat("[R] Starting fdaoutlier.msplot...\n")
         library(fdaoutlier)
         
         # data_array dimensions: [N curves, P time, M components]
@@ -463,6 +542,7 @@ function compute_fdepth_fdaoutlier(Y_list, t, y_true)
                 anomaly_scores[ms_res$outliers_index] <- 1
             }
         }
+        cat("[R] fdaoutlier.msplot completed.\n")
         """
         anomaly_scores = @rget anomaly_scores
         return find_best_f1_threshold(anomaly_scores, y_true)
@@ -495,31 +575,69 @@ function run_all_depth_methods(Y_list, t, y_true; is_multivariate=false)
     
     return methods
 end
+println("      ✓ run_all_depth_methods defined")
 
-println("R environment and depth functions loaded")
+println("  ✓ All depth computation functions defined")
+println("\n" * "="^70)
+println("[PHASE 2] R environment and depth functions loaded successfully!")
+println("="^70)
 
 # ============================================================================
 # Experiment: Multivariate One Anomalous Channel
 # ============================================================================
 
+println("\n[PHASE 3] Setting up experiment configuration...")
+println("  [3.1] Checking t_grid availability...")
+
+# t_grid should be defined in sim_core.jl (included above)
+# If not available, define it here as fallback
+if !isdefined(@__MODULE__, :t_grid)
+    const t_grid = range(0.0, 1.0; length=32) |> collect
+    println("Warning: t_grid not found, using default with length $(length(t_grid))")
+else
+    println("t_grid available from sim_core.jl with length: $(length(t_grid))")
+end
+
+println("  ✓ t_grid check completed")
+
+println("  [3.2] Setting experiment constants...")
 const mc_trials = 100
 const base_seed_val = 0x000000000135CFF1
+println("  ✓ mc_trials = $mc_trials")
+println("  ✓ base_seed_val = $base_seed_val")
 
+println("\n" * "="^70)
+println("[PHASE 3] Experiment configuration complete!")
+println("="^70)
+
+println("\n[PHASE 4] Defining experiment function...")
 # Function to run MC trials for a simulated dataset
 function run_simulated_experiment(anomaly_type, dataset_name; is_multivariate=false, regime=nothing)
+    println("\n[EXPERIMENT] Entering run_simulated_experiment function")
+    println("[EXPERIMENT] Parameters:")
+    println("  - dataset_name: $dataset_name")
+    println("  - is_multivariate: $is_multivariate")
+    println("  - regime: $regime")
+    println("  - anomaly_type: $anomaly_type")
     println("\n" * "="^70)
     println("Running experiment: $dataset_name")
     println("="^70)
     
     # Plot ground truth data
+    println("[EXPERIMENT] Generating ground truth data for plotting...")
     Random.seed!(base_seed_val)
     if is_multivariate
+        println("[EXPERIMENT] Calling make_multivariate_dataset with regime=$regime, t_grid length=$(length(t_grid))")
         data = make_multivariate_dataset(; regime=regime, t=t_grid)
     else
+        println("[EXPERIMENT] Calling make_univariate_dataset with anomaly_type=$anomaly_type, t_grid length=$(length(t_grid))")
         data = make_univariate_dataset(; anomaly_type=anomaly_type, t=t_grid)
     end
+    println("[EXPERIMENT] Ground truth data generated: $(length(data.Y_list)) observations")
     plot_path = joinpath(project_root, "plots", "notebook_output", "$(dataset_name)_ground_truth.png")
+    println("[EXPERIMENT] Plotting ground truth data...")
     plot_dataset(data.Y_list, data.y_true, data.t, "$dataset_name - Ground Truth"; save_path=plot_path)
+    println("[EXPERIMENT] Ground truth plot saved")
     
     # Run WICMAD and depth methods on MC trials
     all_metrics_wicmad = []
@@ -529,6 +647,7 @@ function run_simulated_experiment(anomaly_type, dataset_name; is_multivariate=fa
     csv_rows = []
     
     # Determine if multivariate based on first data generation
+    println("[EXPERIMENT] Determining data characteristics...")
     Random.seed!(base_seed_val)
     if is_multivariate
         test_data = make_multivariate_dataset(; regime=regime, t=t_grid)
@@ -537,19 +656,26 @@ function run_simulated_experiment(anomaly_type, dataset_name; is_multivariate=fa
     end
     M = size(test_data.Y_list[1], 2)
     is_multivariate_data = M > 1
+    println("[EXPERIMENT] Data characteristics: M=$M channels, is_multivariate_data=$is_multivariate_data")
     
     # Initialize depth method storage (different for univariate vs multivariate)
+    println("[EXPERIMENT] Initializing depth method storage...")
     if is_multivariate_data
         depth_method_names = ["depth.FMp", "depth.RPp", "mrfDepth.fOutl", "fdaoutlier.msplot"]
     else
         depth_method_names = ["depth.FM", "depth.mode", "depth.RT", "depth.RP", "depth.RPD"]
     end
+    println("[EXPERIMENT] Depth methods to use: $depth_method_names")
     for method in depth_method_names
         all_metrics_depths[method] = []
     end
+    println("[EXPERIMENT] Depth method storage initialized")
     
+    println("\n[EXPERIMENT] Starting MC trials loop (total trials: $mc_trials)...")
     for mc_idx in 1:mc_trials
-        println("MC run $mc_idx")
+        println("\n" * "-"^70)
+        println("[MC $mc_idx/$mc_trials] Starting Monte Carlo trial $mc_idx")
+        println("-"^70)
         Random.seed!(base_seed_val + mc_idx - 1)
         if is_multivariate
             data_mc = make_multivariate_dataset(; regime=regime, t=t_grid)
@@ -558,9 +684,13 @@ function run_simulated_experiment(anomaly_type, dataset_name; is_multivariate=fa
         end
         
         # Run all depth methods first (use appropriate methods for univariate vs multivariate)
+        println("[MC $mc_idx/$mc_trials] Generating data...")
         M = size(data_mc.Y_list[1], 2)
         is_multivariate_data = M > 1
+        println("[MC $mc_idx/$mc_trials] Data generated: M=$M channels, is_multivariate=$is_multivariate_data")
+        println("[MC $mc_idx/$mc_trials] Running depth methods...")
         depth_results = run_all_depth_methods(data_mc.Y_list, data_mc.t, data_mc.y_true; is_multivariate=is_multivariate_data)
+        println("[MC $mc_idx/$mc_trials] Depth methods completed")
         for (method_name, result) in depth_results
             if !isnothing(result) && !isnothing(result.metrics)
                 push!(all_metrics_depths[method_name], result.metrics)
@@ -580,18 +710,24 @@ function run_simulated_experiment(anomaly_type, dataset_name; is_multivariate=fa
             end
         end
         
-        # Run WICMAD after depth methods
+        # All R depth methods completed, now run WICMAD (Julia code)
+        println("[MC $mc_idx/$mc_trials] Functional depths computed. Starting WICMAD...")
         normal_indices = findall(==(0), data_mc.y_true)
         revealed_idx = sort(sample(normal_indices, max(1, round(Int, 0.15 * length(normal_indices))), replace=false))
+        println("[MC $mc_idx/$mc_trials] Selected $(length(revealed_idx)) revealed indices for semi-supervised learning")
         
         # Wavelet selection
+        println("[MC $mc_idx/$mc_trials] Running wavelet selection...")
         sel = select_wavelet(data_mc.Y_list, data_mc.t, revealed_idx;
             wf_candidates = nothing, J = nothing, boundary = "periodic",
             mcmc = (n_iter=3000, burnin=1000, thin=1), verbose=false)
         wf_selected = sel.selected_wf
+        println("[MC $mc_idx/$mc_trials] Wavelet selected: $wf_selected")
         
+        println("[MC $mc_idx/$mc_trials] Running WICMAD (n_iter=5000, burn=2000)...")
         res = wicmad(data_mc.Y_list, data_mc.t; n_iter=5000, burn=2000, thin=1,
                      wf=wf_selected, revealed_idx=revealed_idx, verbose=false)
+        println("[MC $mc_idx/$mc_trials] WICMAD completed.")
         mapr = map_from_res(res)
         wicmad_metrics = compute_metrics(mapr.z_hat, data_mc.y_true)
         push!(all_metrics_wicmad, wicmad_metrics)
@@ -610,8 +746,18 @@ function run_simulated_experiment(anomaly_type, dataset_name; is_multivariate=fa
         ))
     end
     
-    # Display median metrics for WICMAD
+    # Compute and display mean and median metrics for WICMAD
     if !isempty(all_metrics_wicmad)
+        mean_metrics_wicmad = (
+            precision = mean([m.precision for m in all_metrics_wicmad]),
+            recall = mean([m.recall for m in all_metrics_wicmad]),
+            f1 = mean([m.f1 for m in all_metrics_wicmad]),
+            accuracy = mean([m.accuracy for m in all_metrics_wicmad]),
+            tp = round(Int, mean([m.tp for m in all_metrics_wicmad])),
+            tn = round(Int, mean([m.tn for m in all_metrics_wicmad])),
+            fp = round(Int, mean([m.fp for m in all_metrics_wicmad])),
+            fn = round(Int, mean([m.fn for m in all_metrics_wicmad]))
+        )
         median_metrics_wicmad = (
             precision = median([m.precision for m in all_metrics_wicmad]),
             recall = median([m.recall for m in all_metrics_wicmad]),
@@ -622,16 +768,28 @@ function run_simulated_experiment(anomaly_type, dataset_name; is_multivariate=fa
             fp = round(Int, median([m.fp for m in all_metrics_wicmad])),
             fn = round(Int, median([m.fn for m in all_metrics_wicmad]))
         )
+        print_metrics("WICMAD - $dataset_name [Mean over $mc_trials MC]", mean_metrics_wicmad)
         print_metrics("WICMAD - $dataset_name [Median over $mc_trials MC]", median_metrics_wicmad)
     end
     
-    # Display median metrics for each depth method
+    # Compute and display mean and median metrics for each depth method
     println("\n" * "="^70)
-    println("Functional Depth Methods - $dataset_name [Median over $mc_trials MC]")
+    println("Functional Depth Methods - $dataset_name [Mean/Median over $mc_trials MC]")
     println("="^70)
+    summary_rows = []
     for method_name in depth_method_names
         if !isempty(all_metrics_depths[method_name])
             metrics_list = all_metrics_depths[method_name]
+            mean_m = (
+                precision = mean([m.precision for m in metrics_list]),
+                recall = mean([m.recall for m in metrics_list]),
+                f1 = mean([m.f1 for m in metrics_list]),
+                accuracy = mean([m.accuracy for m in metrics_list]),
+                tp = round(Int, mean([m.tp for m in metrics_list])),
+                tn = round(Int, mean([m.tn for m in metrics_list])),
+                fp = round(Int, mean([m.fp for m in metrics_list])),
+                fn = round(Int, mean([m.fn for m in metrics_list]))
+            )
             median_m = (
                 precision = median([m.precision for m in metrics_list]),
                 recall = median([m.recall for m in metrics_list]),
@@ -642,19 +800,89 @@ function run_simulated_experiment(anomaly_type, dataset_name; is_multivariate=fa
                 fp = round(Int, median([m.fp for m in metrics_list])),
                 fn = round(Int, median([m.fn for m in metrics_list]))
             )
-            print_metrics(method_name, median_m)
+            print_metrics("$method_name [Mean]", mean_m)
+            print_metrics("$method_name [Median]", median_m)
+            
+            # Store summary metrics
+            push!(summary_rows, (;
+                method = method_name,
+                variant = "raw",
+                statistic = "mean",
+                precision = mean_m.precision,
+                recall = mean_m.recall,
+                f1 = mean_m.f1,
+                accuracy = mean_m.accuracy,
+                tp = mean_m.tp,
+                tn = mean_m.tn,
+                fp = mean_m.fp,
+                fn = mean_m.fn
+            ))
+            push!(summary_rows, (;
+                method = method_name,
+                variant = "raw",
+                statistic = "median",
+                precision = median_m.precision,
+                recall = median_m.recall,
+                f1 = median_m.f1,
+                accuracy = median_m.accuracy,
+                tp = median_m.tp,
+                tn = median_m.tn,
+                fp = median_m.fp,
+                fn = median_m.fn
+            ))
         end
     end
     
-    # Save results to CSV
+    # Add WICMAD summaries
+    if !isempty(all_metrics_wicmad)
+        push!(summary_rows, (;
+            method = "WICMAD",
+            variant = "raw",
+            statistic = "mean",
+            precision = mean_metrics_wicmad.precision,
+            recall = mean_metrics_wicmad.recall,
+            f1 = mean_metrics_wicmad.f1,
+            accuracy = mean_metrics_wicmad.accuracy,
+            tp = mean_metrics_wicmad.tp,
+            tn = mean_metrics_wicmad.tn,
+            fp = mean_metrics_wicmad.fp,
+            fn = mean_metrics_wicmad.fn
+        ))
+        push!(summary_rows, (;
+            method = "WICMAD",
+            variant = "raw",
+            statistic = "median",
+            precision = median_metrics_wicmad.precision,
+            recall = median_metrics_wicmad.recall,
+            f1 = median_metrics_wicmad.f1,
+            accuracy = median_metrics_wicmad.accuracy,
+            tp = median_metrics_wicmad.tp,
+            tn = median_metrics_wicmad.tn,
+            fp = median_metrics_wicmad.fp,
+            fn = median_metrics_wicmad.fn
+        ))
+    end
+    
+    # Save individual trial results to CSV
     if !isempty(csv_rows)
         df = DataFrame(csv_rows)
         results_dir = joinpath(project_root, "results")
         mkpath(results_dir)
         csv_path = joinpath(results_dir, "$(dataset_name)_results.csv")
         CSV.write(csv_path, df)
-        println("\nSaved results to CSV: $csv_path")
+        println("\nSaved individual trial results to CSV: $csv_path")
         println("  Total rows: $(nrow(df)) (one per MC trial per method)")
+    end
+    
+    # Save summary (mean/median) results to CSV
+    if !isempty(summary_rows)
+        df_summary = DataFrame(summary_rows)
+        results_dir = joinpath(project_root, "results")
+        mkpath(results_dir)
+        summary_csv_path = joinpath(results_dir, "$(dataset_name)_summary.csv")
+        CSV.write(summary_csv_path, df_summary)
+        println("Saved summary (mean/median) results to CSV: $summary_csv_path")
+        println("  Total rows: $(nrow(df_summary)) (one per method per statistic)")
     end
     
     # Plot clustering result
@@ -671,10 +899,39 @@ function run_simulated_experiment(anomaly_type, dataset_name; is_multivariate=fa
     mapr_plot = map_from_res(res_plot)
     plot_path = joinpath(project_root, "plots", "notebook_output", "$(dataset_name)_clustering.png")
     plot_clustered(data_plot.Y_list, mapr_plot.z_hat, data_plot.t, "$dataset_name - WICMAD Clustering"; save_path=plot_path)
+    println("\n[EXPERIMENT] run_simulated_experiment function completed successfully")
 end
 
-# Run the experiment
-run_simulated_experiment(nothing, "Multivariate_One_Anomalous_Channel"; is_multivariate=true, regime=:one)
+println("  ✓ Experiment function defined")
+println("\n" * "="^70)
+println("[PHASE 4] Experiment function definition complete!")
+println("="^70)
 
-println("\nExperiment completed!")
+# Run the experiment
+println("\n" * "="^70)
+println("[PHASE 5] Starting experiment execution...")
+println("="^70)
+println("[EXEC] About to call run_simulated_experiment...")
+println("[EXEC] Arguments: dataset_name=\"Multivariate_One_Anomalous_Channel\", is_multivariate=true, regime=:one")
+try
+    run_simulated_experiment(nothing, "Multivariate_One_Anomalous_Channel"; is_multivariate=true, regime=:one)
+    println("\n" * "="^70)
+    println("[PHASE 5] Experiment execution completed successfully!")
+    println("="^70)
+catch e
+    println("\n" * "="^70)
+    println("[ERROR] Experiment failed with exception:")
+    println("="^70)
+    println(e)
+    println("\nStack trace:")
+    for (exc, bt) in Base.catch_stack()
+        showerror(stdout, exc, bt)
+        println()
+    end
+    rethrow(e)
+end
+
+println("\n" * "="^70)
+println("[END] Script execution finished")
+println("="^70)
 
