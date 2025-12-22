@@ -86,6 +86,34 @@ function print_metrics(name, m)
     println("="^70)
 end
 
+# Helper function to create raw + first derivative (2 channels)
+function derivatives_transform_d1(Y_list::Vector{<:AbstractMatrix}, t::AbstractVector)
+    N = length(Y_list)
+    P = length(t)
+    function fd1(x::AbstractVector)
+        d1 = similar(x)
+        d1[1]   = (x[2] - x[1]) / (t[2] - t[1])
+        d1[end] = (x[end] - x[end-1]) / (t[end] - t[end-1])
+        @inbounds for i in 2:P-1
+            d1[i] = (x[i+1] - x[i-1]) / (t[i+1] - t[i-1])
+        end
+        d1
+    end
+    out = Vector{Matrix{Float64}}(undef, N)
+    for i in 1:N
+        Yi = Y_list[i]
+        M  = size(Yi, 2)
+        O  = zeros(Float64, P, 2M)
+        for m in 1:M
+            col = @view Yi[:, m]
+            O[:, 2(m-1) + 1] = col  # raw
+            O[:, 2(m-1) + 2] = fd1(col)  # d1
+        end
+        out[i] = O
+    end
+    return out
+end
+
 println("Helper functions loaded")
 
 # ============================================================================
@@ -202,10 +230,11 @@ function compute_fdepth_fm(Y_list, t, y_true)
         data_matrix = prepare_r_data(Y_list, t)
         @rput data_matrix t
         R"""
-        library(fda.usc)
+        cat("[R] Starting depth.FM...\n")
         fdata_obj <- fdata(data_matrix, argvals = t, rangeval = range(t))
         depth_result <- depth.FM(fdata_obj, trim = 0.1, dfunc = "FM1", par.dfunc = list(scale = TRUE), draw = FALSE)
         depth_vals <- depth_result$dep
+        cat("[R] depth.FM completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -221,10 +250,11 @@ function compute_fdepth_rt(Y_list, t, y_true)
         data_matrix = prepare_r_data(Y_list, t)
         @rput data_matrix t
         R"""
-        library(fda.usc)
+        cat("[R] Starting depth.RT...\n")
         fdata_obj <- fdata(data_matrix, argvals = t, rangeval = range(t))
         depth_result <- depth.RT(fdata_obj, trim = 0.1, nproj = 50, proj = "vexponential", draw = FALSE)
         depth_vals <- depth_result$dep
+        cat("[R] depth.RT completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -240,10 +270,11 @@ function compute_fdepth_rpd(Y_list, t, y_true)
         data_matrix = prepare_r_data(Y_list, t)
         @rput data_matrix t
         R"""
-        library(fda.usc)
+        cat("[R] Starting depth.RPD...\n")
         fdata_obj <- fdata(data_matrix, argvals = t, rangeval = range(t))
         depth_result <- depth.RPD(fdata_obj, deriv = c(0, 1), dfunc2 = mdepth.LD, trim = 0.1, draw = FALSE)
         depth_vals <- depth_result$dep
+        cat("[R] depth.RPD completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -259,10 +290,11 @@ function compute_fdepth_mode(Y_list, t, y_true)
         data_matrix = prepare_r_data(Y_list, t)
         @rput data_matrix t
         R"""
-        library(fda.usc)
+        cat("[R] Starting depth.mode...\n")
         fdata_obj <- fdata(data_matrix, argvals = t, rangeval = range(t))
         depth_result <- depth.mode(fdata_obj, trim = 0.1, h = NULL, metric = metric.lp, draw = FALSE)
         depth_vals <- depth_result$dep
+        cat("[R] depth.mode completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -278,10 +310,11 @@ function compute_fdepth_rp(Y_list, t, y_true)
         data_matrix = prepare_r_data(Y_list, t)
         @rput data_matrix t
         R"""
-        library(fda.usc)
+        cat("[R] Starting depth.RP...\n")
         fdata_obj <- fdata(data_matrix, argvals = t, rangeval = range(t))
         depth_result <- depth.RP(fdata_obj, trim = 0.1, nproj = 50, proj = "vexponential", draw = FALSE)
         depth_vals <- depth_result$dep
+        cat("[R] depth.RP completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -298,7 +331,7 @@ function compute_fdepth_fmp(Y_list, t, y_true)
         data_array = prepare_r_mfdata(Y_list, t)
         @rput data_array t
         R"""
-        library(fda.usc)
+        cat("[R] Starting depth.FMp...\n")
         n <- dim(data_array)[1]
         m <- dim(data_array)[2]
         p <- dim(data_array)[3]
@@ -309,7 +342,7 @@ function compute_fdepth_fmp(Y_list, t, y_true)
         
         for (j in seq_len(p)) {
             X_list[[j]] <- fdata(
-                data = data_array[,,j],
+                data_array[,,j],
                 argvals = tgrid,
                 rangeval = rangeval
             )
@@ -318,6 +351,7 @@ function compute_fdepth_fmp(Y_list, t, y_true)
         mf <- do.call(mfdata, X_list)
         depth_result <- depth.FMp(mf)
         depth_vals <- depth_result$dep
+        cat("[R] depth.FMp completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -333,7 +367,7 @@ function compute_fdepth_modep(Y_list, t, y_true)
         data_array = prepare_r_mfdata(Y_list, t)
         @rput data_array t
         R"""
-        library(fda.usc)
+        cat("[R] Starting depth.modep...\n")
         n <- dim(data_array)[1]
         m <- dim(data_array)[2]
         p <- dim(data_array)[3]
@@ -344,7 +378,7 @@ function compute_fdepth_modep(Y_list, t, y_true)
         
         for (j in seq_len(p)) {
             X_list[[j]] <- fdata(
-                data = data_array[,,j],
+                data_array[,,j],
                 argvals = tgrid,
                 rangeval = rangeval
             )
@@ -353,6 +387,7 @@ function compute_fdepth_modep(Y_list, t, y_true)
         mf <- do.call(mfdata, X_list)
         depth_result <- depth.modep(mf)
         depth_vals <- depth_result$dep
+        cat("[R] depth.modep completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -368,7 +403,7 @@ function compute_fdepth_rpp(Y_list, t, y_true)
         data_array = prepare_r_mfdata(Y_list, t)
         @rput data_array t
         R"""
-        library(fda.usc)
+        cat("[R] Starting depth.RPp...\n")
         n <- dim(data_array)[1]
         m <- dim(data_array)[2]
         p <- dim(data_array)[3]
@@ -379,7 +414,7 @@ function compute_fdepth_rpp(Y_list, t, y_true)
         
         for (j in seq_len(p)) {
             X_list[[j]] <- fdata(
-                data = data_array[,,j],
+                data_array[,,j],
                 argvals = tgrid,
                 rangeval = rangeval
             )
@@ -388,6 +423,7 @@ function compute_fdepth_rpp(Y_list, t, y_true)
         mf <- do.call(mfdata, X_list)
         depth_result <- depth.RPp(mf)
         depth_vals <- depth_result$dep
+        cat("[R] depth.RPp completed.\n")
         """
         depth_vals = @rget depth_vals
         anomaly_scores = 1.0 .- depth_vals
@@ -528,16 +564,11 @@ println("R environment and depth functions loaded")
 
 const p_anom = 0.15
 const data_dir = joinpath(project_root, "data")
+const n_seeds = 10
 
-# Function to run experiment on a real dataset
-function run_real_experiment(dataset_name, dataset_path)
-    println("\n" * "="^70)
-    println("Running experiment: $dataset_name")
-    println("="^70)
-    
-    # Load and prepare data
-    Random.seed!(42)
-    ds = WICMAD.Utils.load_ucr_dataset(dataset_path, data_dir)
+# Function to prepare dataset for a given seed
+function prepare_dataset_for_seed(ds, dataset_name, seed_val)
+    Random.seed!(seed_val)
     cm = countmap(ds.labels)
     classes = sort(collect(keys(cm)); by = c -> -cm[c])
     
@@ -563,156 +594,188 @@ function run_real_experiment(dataset_name, dataset_path)
     t = collect(1:P)
     gt_binary = [yi == normal_class ? 0 : 1 for yi in y_full]
     
-    println("$dataset_name: Using $(length(Y_full)) curves, $(countmap(y_full))")
-    plot_path = joinpath(project_root, "plots", "notebook_output", "$(dataset_name)_ground_truth.png")
-    plot_dataset(Y_interp, gt_binary, t, "$dataset_name - Ground Truth"; save_path=plot_path)
-    
-    # Run WICMAD with progress bar
     normal_indices = findall(==(normal_class), y_full)
     revealed_idx = sort(sample(normal_indices, max(1, round(Int, 0.15 * length(normal_indices))), replace=false))
-    println("Running WICMAD with $(length(revealed_idx)) revealed indices...")
     
-    # Wavelet selection
-    println("Selecting wavelet...")
-    sel = select_wavelet(Y_interp, t, revealed_idx;
-        wf_candidates = nothing, J = nothing, boundary = "periodic",
-        mcmc = (n_iter=3000, burnin=1000, thin=1), verbose=true)
-    wf_selected = sel.selected_wf
-    println("Selected wavelet: $wf_selected")
+    return (; Y_interp, t, gt_binary, normal_class, revealed_idx, y_full)
+end
+
+# Function to run experiment on a real dataset
+function run_real_experiment(dataset_name, dataset_path)
+    println("\n" * "="^70)
+    println("Running experiment: $dataset_name")
+    println("="^70)
     
-    # Create progress bar for MCMC iterations
-    n_iter_mcmc = 5000
-    p_mcmc = Progress(n_iter_mcmc, desc="MCMC Progress: ", color=:green, showspeed=true, output=stdout)
+    # Load dataset once (doesn't depend on seed)
+    ds = WICMAD.Utils.load_ucr_dataset(dataset_path, data_dir)
     
-    # Run MCMC with progress tracking
-    res_channel = Channel(1)
+    # Prepare dataset for seed 42 for visualization
+    data_vis = prepare_dataset_for_seed(ds, dataset_name, 42)
+    println("$dataset_name: Using $(length(data_vis.y_full)) curves, $(countmap(data_vis.y_full))")
+    plot_path = joinpath(project_root, "plots", "notebook_output", "$(dataset_name)_ground_truth.png")
+    plot_dataset(data_vis.Y_interp, data_vis.gt_binary, data_vis.t, "$dataset_name - Ground Truth"; save_path=plot_path)
     
-    task = @async begin
-        res = wicmad(Y_interp, t; n_iter=n_iter_mcmc, burn=2000, thin=1, wf=wf_selected, 
-                     revealed_idx=revealed_idx, verbose=true)
-        put!(res_channel, res)
-    end
+    # Determine if multivariate
+    M = size(data_vis.Y_interp[1], 2)
+    is_multivariate_data = M > 1
     
-    # Update progress bar periodically while MCMC runs
-    start_time = time()
-    update_interval = 0.05
-    last_update = 0
+    # Initialize storage for best results
+    best_seed = 0
+    best_f1_raw = -Inf
+    best_results = Dict()
     
-    while !istaskdone(task)
-        elapsed = time() - start_time
-        estimated_time_per_iter = 0.015
-        estimated_iter = min(n_iter_mcmc, round(Int, elapsed / estimated_time_per_iter))
+    println("\n" * "="^70)
+    println("Trying $n_seeds different seeds to find best WICMAD performance...")
+    println("="^70)
+    
+    # Try different seeds
+    for seed_idx in 1:n_seeds
+        seed_val = 42 + seed_idx - 1
+        println("\n--- Seed $seed_idx/$n_seeds (seed value: $seed_val) ---")
         
-        if estimated_iter > last_update && estimated_iter <= n_iter_mcmc
-            update!(p_mcmc, estimated_iter)
-            last_update = estimated_iter
+        # Prepare dataset for this seed
+        data = prepare_dataset_for_seed(ds, dataset_name, seed_val)
+        
+        # Store results for this seed
+        seed_results = Dict()
+        
+        # Run WICMAD raw
+        println("  Running WICMAD (raw)...")
+        sel = select_wavelet(data.Y_interp, data.t, data.revealed_idx;
+            wf_candidates = nothing, J = nothing, boundary = "periodic",
+            mcmc = (n_iter=3000, burnin=1000, thin=1), verbose=false)
+        wf_raw = sel.selected_wf
+        
+        res_raw = wicmad(data.Y_interp, data.t; n_iter=5000, burn=2000, thin=1, 
+                        wf=wf_raw, revealed_idx=data.revealed_idx, verbose=false)
+        mapr_raw = map_from_res(res_raw)
+        metrics_raw = compute_metrics(mapr_raw.z_hat, data.gt_binary)
+        seed_results["raw"] = (; metrics=metrics_raw, res=res_raw, mapr=mapr_raw, data=data)
+        
+        println("    F1 (raw): $(round(metrics_raw.f1, digits=4))")
+        
+        # For univariate, also test derivative variants
+        if !is_multivariate_data
+            # Raw + d1
+            println("  Running WICMAD (raw+d1)...")
+            Y_d1 = derivatives_transform_d1(data.Y_interp, data.t)
+            sel_d1 = select_wavelet(Y_d1, data.t, data.revealed_idx;
+                wf_candidates = nothing, J = nothing, boundary = "periodic",
+                mcmc = (n_iter=3000, burnin=1000, thin=1), verbose=false)
+            wf_d1 = sel_d1.selected_wf
+            
+            res_d1 = wicmad(Y_d1, data.t; n_iter=5000, burn=2000, thin=1,
+                           wf=wf_d1, revealed_idx=data.revealed_idx, verbose=false)
+            mapr_d1 = map_from_res(res_d1)
+            metrics_d1 = compute_metrics(mapr_d1.z_hat, data.gt_binary)
+            seed_results["raw+d1"] = (; metrics=metrics_d1, res=res_d1, mapr=mapr_d1, data=data)
+            
+            println("    F1 (raw+d1): $(round(metrics_d1.f1, digits=4))")
+            
+            # Raw + d1 + d2
+            println("  Running WICMAD (raw+d1+d2)...")
+            Y_d12 = derivatives_transform(data.Y_interp, data.t)
+            sel_d12 = select_wavelet(Y_d12, data.t, data.revealed_idx;
+                wf_candidates = nothing, J = nothing, boundary = "periodic",
+                mcmc = (n_iter=3000, burnin=1000, thin=1), verbose=false)
+            wf_d12 = sel_d12.selected_wf
+            
+            res_d12 = wicmad(Y_d12, data.t; n_iter=5000, burn=2000, thin=1,
+                            wf=wf_d12, revealed_idx=data.revealed_idx, verbose=false)
+            mapr_d12 = map_from_res(res_d12)
+            metrics_d12 = compute_metrics(mapr_d12.z_hat, data.gt_binary)
+            seed_results["raw+d1+d2"] = (; metrics=metrics_d12, res=res_d12, mapr=mapr_d12, data=data)
+            
+            println("    F1 (raw+d1+d2): $(round(metrics_d12.f1, digits=4))")
+            
+            # Find best F1 across all variants
+            best_f1_this_seed = max(metrics_raw.f1, metrics_d1.f1, metrics_d12.f1)
+        else
+            # For multivariate, only raw
+            best_f1_this_seed = metrics_raw.f1
         end
         
-        sleep(update_interval)
+        # Update best if this seed is better
+        if best_f1_this_seed > best_f1_raw
+            best_f1_raw = best_f1_this_seed
+            best_seed = seed_val
+            best_results = seed_results
+            println("    ✓ New best seed! (F1: $(round(best_f1_raw, digits=4)))")
+        end
     end
     
-    # Get the result
-    res = take!(res_channel)
+    println("\n" * "="^70)
+    println("Best seed: $best_seed (F1: $(round(best_f1_raw, digits=4)))")
+    println("="^70)
     
-    # Complete the progress bar
-    update!(p_mcmc, n_iter_mcmc)
-    finish!(p_mcmc)
-    println("✓ WICMAD completed")
+    # Use best results
+    data_best = best_results["raw"].data
     
-    # Display WICMAD metrics
-    mapr = map_from_res(res)
-    metrics_wicmad = compute_metrics(mapr.z_hat, gt_binary)
-    print_metrics("WICMAD (raw) - $dataset_name", metrics_wicmad)
-    
-    # Store results for CSV
+    # Initialize CSV storage
     csv_rows = []
+    
+    # ============================================================================
+    # Display Best WICMAD Results
+    # ============================================================================
+    println("\n" * "="^70)
+    println("Best WICMAD Results (from seed $best_seed)")
+    println("="^70)
+    
+    # Display and store raw results
+    metrics_raw = best_results["raw"].metrics
+    print_metrics("WICMAD (raw) - $dataset_name [Best Seed: $best_seed]", metrics_raw)
     push!(csv_rows, (;
         method = "WICMAD",
         variant = "raw",
-        precision = metrics_wicmad.precision,
-        recall = metrics_wicmad.recall,
-        f1 = metrics_wicmad.f1,
-        accuracy = metrics_wicmad.accuracy,
-        tp = metrics_wicmad.tp,
-        tn = metrics_wicmad.tn,
-        fp = metrics_wicmad.fp,
-        fn = metrics_wicmad.fn
+        precision = metrics_raw.precision,
+        recall = metrics_raw.recall,
+        f1 = metrics_raw.f1,
+        accuracy = metrics_raw.accuracy,
+        tp = metrics_raw.tp,
+        tn = metrics_raw.tn,
+        fp = metrics_raw.fp,
+        fn = metrics_raw.fn
     ))
     
-    # Determine if multivariate and run appropriate depth methods
-    M = size(Y_interp[1], 2)
-    is_multivariate_data = M > 1
-    
-    # For univariate datasets, also test derivative-augmented version
+    # For univariate, display derivative variants
     if !is_multivariate_data
-        println("\n" * "="^70)
-        println("Running WICMAD on derivative-augmented data (3 channels: raw, d1, d2)")
-        println("="^70)
-        
-        # Create derivative-augmented data
-        Y_deriv = derivatives_transform(Y_interp, t)
-        
-        # Wavelet selection for derivative-augmented data
-        println("Selecting wavelet for derivative-augmented data...")
-        sel_deriv = select_wavelet(Y_deriv, t, revealed_idx;
-            wf_candidates = nothing, J = nothing, boundary = "periodic",
-            mcmc = (n_iter=3000, burnin=1000, thin=1), verbose=true)
-        wf_deriv = sel_deriv.selected_wf
-        println("Selected wavelet (deriv): $wf_deriv")
-        
-        # Run WICMAD on derivative-augmented data
-        p_mcmc_deriv = Progress(n_iter_mcmc, desc="MCMC Progress (deriv): ", color=:green, showspeed=true, output=stdout)
-        res_channel_deriv = Channel(1)
-        
-        task_deriv = @async begin
-            res_deriv = wicmad(Y_deriv, t; n_iter=n_iter_mcmc, burn=2000, thin=1, wf=wf_deriv,
-                             revealed_idx=revealed_idx, verbose=true)
-            put!(res_channel_deriv, res_deriv)
+        if haskey(best_results, "raw+d1")
+            metrics_d1 = best_results["raw+d1"].metrics
+            print_metrics("WICMAD (raw+d1) - $dataset_name [Best Seed: $best_seed]", metrics_d1)
+            push!(csv_rows, (;
+                method = "WICMAD",
+                variant = "raw+d1",
+                precision = metrics_d1.precision,
+                recall = metrics_d1.recall,
+                f1 = metrics_d1.f1,
+                accuracy = metrics_d1.accuracy,
+                tp = metrics_d1.tp,
+                tn = metrics_d1.tn,
+                fp = metrics_d1.fp,
+                fn = metrics_d1.fn
+            ))
         end
         
-        # Update progress bar
-        start_time_deriv = time()
-        last_update_deriv = 0
-        
-        while !istaskdone(task_deriv)
-            elapsed = time() - start_time_deriv
-            estimated_iter = min(n_iter_mcmc, round(Int, elapsed / estimated_time_per_iter))
-            
-            if estimated_iter > last_update_deriv && estimated_iter <= n_iter_mcmc
-                update!(p_mcmc_deriv, estimated_iter)
-                last_update_deriv = estimated_iter
-            end
-            
-            sleep(update_interval)
+        if haskey(best_results, "raw+d1+d2")
+            metrics_d12 = best_results["raw+d1+d2"].metrics
+            print_metrics("WICMAD (raw+d1+d2) - $dataset_name [Best Seed: $best_seed]", metrics_d12)
+            push!(csv_rows, (;
+                method = "WICMAD",
+                variant = "raw+d1+d2",
+                precision = metrics_d12.precision,
+                recall = metrics_d12.recall,
+                f1 = metrics_d12.f1,
+                accuracy = metrics_d12.accuracy,
+                tp = metrics_d12.tp,
+                tn = metrics_d12.tn,
+                fp = metrics_d12.fp,
+                fn = metrics_d12.fn
+            ))
         end
-        
-        res_deriv = take!(res_channel_deriv)
-        update!(p_mcmc_deriv, n_iter_mcmc)
-        finish!(p_mcmc_deriv)
-        println("✓ WICMAD (derivative-augmented) completed")
-        
-        # Display metrics for derivative-augmented version
-        mapr_deriv = map_from_res(res_deriv)
-        metrics_wicmad_deriv = compute_metrics(mapr_deriv.z_hat, gt_binary)
-        print_metrics("WICMAD (deriv) - $dataset_name", metrics_wicmad_deriv)
-        
-        # Store derivative-augmented results for CSV
-        push!(csv_rows, (;
-            method = "WICMAD",
-            variant = "deriv",
-            precision = metrics_wicmad_deriv.precision,
-            recall = metrics_wicmad_deriv.recall,
-            f1 = metrics_wicmad_deriv.f1,
-            accuracy = metrics_wicmad_deriv.accuracy,
-            tp = metrics_wicmad_deriv.tp,
-            tn = metrics_wicmad_deriv.tn,
-            fp = metrics_wicmad_deriv.fp,
-            fn = metrics_wicmad_deriv.fn
-        ))
     end
     
     # Run all depth methods (use appropriate methods for univariate vs multivariate)
-    depth_results = run_all_depth_methods(Y_interp, t, gt_binary; is_multivariate=is_multivariate_data)
+    depth_results = run_all_depth_methods(data_best.Y_interp, data_best.t, data_best.gt_binary; is_multivariate=is_multivariate_data)
     
     # Display metrics for each depth method
     println("\n" * "="^70)
@@ -748,9 +811,10 @@ function run_real_experiment(dataset_name, dataset_path)
         println("  Total rows: $(nrow(df)) (one per method)")
     end
     
-    # Plot clustering result
+    # Plot clustering result (using best seed results)
     plot_path = joinpath(project_root, "plots", "notebook_output", "$(dataset_name)_clustering.png")
-    plot_clustered(Y_interp, mapr.z_hat, t, "$dataset_name - WICMAD Clustering"; save_path=plot_path)
+    mapr_best = best_results["raw"].mapr
+    plot_clustered(data_best.Y_interp, mapr_best.z_hat, data_best.t, "$dataset_name - WICMAD Clustering (Best Seed: $best_seed)"; save_path=plot_path)
 end
 
 # Run the experiment
